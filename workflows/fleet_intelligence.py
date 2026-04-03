@@ -29,7 +29,7 @@ Author: Wiktor (MDK assignment, April 2026)
 
 from validance.sdk import Task, Workflow
 
-TASK_IMAGE = "python:3.11-slim"
+TASK_IMAGE = "autoregistry.azurecr.io/mdk-fleet-intelligence:latest"
 
 
 def create_workflow() -> Workflow:
@@ -40,7 +40,7 @@ def create_workflow() -> Workflow:
     # ── Task 1: Ingest raw telemetry ─────────────────────────────────────
     ingest = Task(
         name="ingest_telemetry",
-        command="python tasks/ingest.py",
+        command="python /app/tasks/ingest.py",
         docker_image=TASK_IMAGE,
         inputs={
             "fleet_telemetry.csv": "${telemetry_csv_path}",
@@ -61,7 +61,7 @@ def create_workflow() -> Workflow:
     # ── Task 2: Engineer features ────────────────────────────────────────
     features = Task(
         name="engineer_features",
-        command="python tasks/features.py",
+        command="python /app/tasks/features.py",
         docker_image=TASK_IMAGE,
         inputs={
             "telemetry.parquet": "@ingest_telemetry:telemetry_parquet",
@@ -81,7 +81,7 @@ def create_workflow() -> Workflow:
     # ── Task 3: Compute True Efficiency KPI ──────────────────────────────
     kpi = Task(
         name="compute_true_efficiency",
-        command="python tasks/kpi.py",
+        command="python /app/tasks/kpi.py",
         docker_image=TASK_IMAGE,
         inputs={
             "features.parquet": "@engineer_features:feature_matrix",
@@ -102,7 +102,7 @@ def create_workflow() -> Workflow:
     # ── Task 4a: Train anomaly model (offline) ───────────────────────────
     train = Task(
         name="train_anomaly_model",
-        command="python tasks/train_model.py",
+        command="python /app/tasks/train_model.py",
         docker_image=TASK_IMAGE,
         inputs={
             "kpi_timeseries.parquet": "@compute_true_efficiency:kpi_series",
@@ -125,7 +125,7 @@ def create_workflow() -> Workflow:
     # ── Task 4b: Score fleet (online inference simulation) ───────────────
     score = Task(
         name="score_fleet",
-        command="python tasks/score.py",
+        command="python /app/tasks/score.py",
         docker_image=TASK_IMAGE,
         inputs={
             "kpi_timeseries.parquet": "@compute_true_efficiency:kpi_series",
@@ -146,7 +146,7 @@ def create_workflow() -> Workflow:
     # ── Task 5: Optimize fleet (controller) ──────────────────────────────
     optimize = Task(
         name="optimize_fleet",
-        command="python tasks/optimize.py",
+        command="python /app/tasks/optimize.py",
         docker_image=TASK_IMAGE,
         inputs={
             "fleet_risk_scores.json": "@score_fleet:risk_scores",
@@ -168,7 +168,7 @@ def create_workflow() -> Workflow:
     # ── Task 6: Generate report ──────────────────────────────────────────
     report = Task(
         name="generate_report",
-        command="python tasks/report.py",
+        command="python /app/tasks/report.py",
         docker_image=TASK_IMAGE,
         inputs={
             "kpi_timeseries.parquet": "@compute_true_efficiency:kpi_series",
