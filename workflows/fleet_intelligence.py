@@ -1,21 +1,28 @@
 """
 MDK Fleet Intelligence Workflow
 ===============================
-5-task DAG for AI-driven mining optimization and predictive maintenance.
+7-task DAG for AI-driven mining optimization and predictive maintenance.
 
-DAG structure:
-    ingest_telemetry
-         │
-    engineer_features
-         │
-    compute_true_efficiency
-         │
-    ┌────┴────┐
-    │         │
-  predict   (future: optimize)
-  failures
-    │
-  generate_report
+Offline (batch) path:
+    ingest_telemetry → engineer_features → compute_true_efficiency → train_anomaly_model
+
+Online (per-interval) path:
+    score_fleet → optimize_fleet → generate_report
+
+DAG:
+    [1] ingest
+     │
+    [2] features
+     │
+    [3] kpi
+     │
+    [4a] train ──────────┐
+                         │
+                    [4b] score
+                         │
+                    [5] optimize
+                         │
+                    [6] report ← also reads kpi, train, ingest outputs
 
 Author: Wiktor (MDK assignment, April 2026)
 """
@@ -31,7 +38,6 @@ def create_workflow() -> Workflow:
     wf = Workflow("mdk.fleet_intelligence")
 
     # ── Task 1: Ingest raw telemetry ─────────────────────────────────────
-    # Reads CSV + metadata JSON, validates schema, converts to Parquet.
     ingest = Task(
         name="ingest_telemetry",
         command="python tasks/ingest.py",
@@ -53,7 +59,6 @@ def create_workflow() -> Workflow:
     )
 
     # ── Task 2: Engineer features ────────────────────────────────────────
-    # Rolling statistics, rate-of-change, cross-device normalization.
     features = Task(
         name="engineer_features",
         command="python tasks/features.py",
@@ -74,8 +79,6 @@ def create_workflow() -> Workflow:
     )
 
     # ── Task 3: Compute True Efficiency KPI ──────────────────────────────
-    # η_v, P_cooling_norm, TE, decomposition factors, TE_score per row.
-    # See docs/true-efficiency-kpi.md for the full formulation.
     kpi = Task(
         name="compute_true_efficiency",
         command="python tasks/kpi.py",
@@ -96,48 +99,92 @@ def create_workflow() -> Workflow:
         timeout=600,
     )
 
-    # ── Task 4: Predict failures ─────────────────────────────────────────
-    # XGBoost on TE decomposition features + rolling stats.
-    # Outputs per-device risk scores and flagged devices.
-    predict = Task(
-        name="predict_failures",
-        command="python tasks/predict.py",
+    # ── Task 4a: Train anomaly model (offline) ───────────────────────────
+    train = Task(
+        name="train_anomaly_model",
+        command="python tasks/train_model.py",
         docker_image=TASK_IMAGE,
         inputs={
             "kpi_timeseries.parquet": "@compute_true_efficiency:kpi_series",
             "fleet_metadata.json": "@ingest_telemetry:metadata",
         },
         output_files={
-            "predictions": "failure_predictions.json",
+            "model_artifact": "anomaly_model.joblib",
+            "model_metrics": "model_metrics.json",
         },
         output_vars={
-            "flagged_devices": "int",
             "model_accuracy": "float",
             "model_f1": "float",
+            "train_samples": "int",
+            "test_samples": "int",
         },
         depends_on=["compute_true_efficiency"],
         timeout=900,
     )
 
-    # ── Task 5: Generate report ──────────────────────────────────────────
-    # Consolidates KPI timeseries + failure predictions into HTML dashboard.
+    # ── Task 4b: Score fleet (online inference simulation) ───────────────
+    score = Task(
+        name="score_fleet",
+        command="python tasks/score.py",
+        docker_image=TASK_IMAGE,
+        inputs={
+            "kpi_timeseries.parquet": "@compute_true_efficiency:kpi_series",
+            "anomaly_model.joblib": "@train_anomaly_model:model_artifact",
+            "fleet_metadata.json": "@ingest_telemetry:metadata",
+        },
+        output_files={
+            "risk_scores": "fleet_risk_scores.json",
+        },
+        output_vars={
+            "flagged_devices": "int",
+            "scoring_window_hours": "int",
+        },
+        depends_on=["train_anomaly_model"],
+        timeout=300,
+    )
+
+    # ── Task 5: Optimize fleet (controller) ──────────────────────────────
+    optimize = Task(
+        name="optimize_fleet",
+        command="python tasks/optimize.py",
+        docker_image=TASK_IMAGE,
+        inputs={
+            "fleet_risk_scores.json": "@score_fleet:risk_scores",
+            "kpi_timeseries.parquet": "@compute_true_efficiency:kpi_series",
+            "fleet_metadata.json": "@ingest_telemetry:metadata",
+        },
+        output_files={
+            "fleet_actions": "fleet_actions.json",
+        },
+        output_vars={
+            "actions_issued": "int",
+            "devices_underclocked": "int",
+            "devices_inspected": "int",
+        },
+        depends_on=["score_fleet"],
+        timeout=300,
+    )
+
+    # ── Task 6: Generate report ──────────────────────────────────────────
     report = Task(
         name="generate_report",
         command="python tasks/report.py",
         docker_image=TASK_IMAGE,
         inputs={
             "kpi_timeseries.parquet": "@compute_true_efficiency:kpi_series",
-            "failure_predictions.json": "@predict_failures:predictions",
+            "fleet_risk_scores.json": "@score_fleet:risk_scores",
+            "model_metrics.json": "@train_anomaly_model:model_metrics",
+            "fleet_actions.json": "@optimize_fleet:fleet_actions",
             "fleet_metadata.json": "@ingest_telemetry:metadata",
         },
         output_files={
             "dashboard": "report.html",
         },
-        depends_on=["predict_failures"],
+        depends_on=["optimize_fleet"],
         timeout=600,
     )
 
-    for t in [ingest, features, kpi, predict, report]:
+    for t in [ingest, features, kpi, train, score, optimize, report]:
         wf.add_task(t)
 
     return wf
