@@ -1,0 +1,168 @@
+{
+  "generator": "MDK Synthetic Fleet Telemetry v1.0",
+  "generated_at": "2026-04-03T15:54:09.468783",
+  "seed": 42,
+  "parameters": {
+    "num_devices": 10,
+    "days": 30,
+    "interval_minutes": 5,
+    "samples_per_device": 8640,
+    "total_rows": 86400
+  },
+  "site": {
+    "latitude": 64.5,
+    "energy_cost_base_kwh": 0.035,
+    "energy_cost_peak_kwh": 0.065,
+    "cooling_type": "hydro + air",
+    "location_description": "Northern site (hydro power, cool climate)"
+  },
+  "fleet": [
+    {
+      "device_id": "ASIC-000",
+      "model": "S21-HYD",
+      "stock_clock_ghz": 1.6,
+      "stock_voltage_v": 0.3,
+      "nominal_hashrate_th": 335.0,
+      "nominal_power_w": 5025.0,
+      "nominal_efficiency_jth": 15.0
+    },
+    {
+      "device_id": "ASIC-001",
+      "model": "S21-HYD",
+      "stock_clock_ghz": 1.6,
+      "stock_voltage_v": 0.3,
+      "nominal_hashrate_th": 335.0,
+      "nominal_power_w": 5025.0,
+      "nominal_efficiency_jth": 15.0
+    },
+    {
+      "device_id": "ASIC-002",
+      "model": "M66S",
+      "stock_clock_ghz": 1.5,
+      "stock_voltage_v": 0.32,
+      "nominal_hashrate_th": 298.0,
+      "nominal_power_w": 5370.0,
+      "nominal_efficiency_jth": 18.0
+    },
+    {
+      "device_id": "ASIC-003",
+      "model": "M66S",
+      "stock_clock_ghz": 1.5,
+      "stock_voltage_v": 0.32,
+      "nominal_hashrate_th": 298.0,
+      "nominal_power_w": 5370.0,
+      "nominal_efficiency_jth": 18.0
+    },
+    {
+      "device_id": "ASIC-004",
+      "model": "S19XP",
+      "stock_clock_ghz": 1.35,
+      "stock_voltage_v": 0.35,
+      "nominal_hashrate_th": 141.0,
+      "nominal_power_w": 3010.0,
+      "nominal_efficiency_jth": 21.3
+    },
+    {
+      "device_id": "ASIC-005",
+      "model": "S19XP",
+      "stock_clock_ghz": 1.35,
+      "stock_voltage_v": 0.35,
+      "nominal_hashrate_th": 141.0,
+      "nominal_power_w": 3010.0,
+      "nominal_efficiency_jth": 21.3
+    },
+    {
+      "device_id": "ASIC-006",
+      "model": "S19XP",
+      "stock_clock_ghz": 1.35,
+      "stock_voltage_v": 0.35,
+      "nominal_hashrate_th": 141.0,
+      "nominal_power_w": 3010.0,
+      "nominal_efficiency_jth": 21.3
+    },
+    {
+      "device_id": "ASIC-007",
+      "model": "S19jPro",
+      "stock_clock_ghz": 1.2,
+      "stock_voltage_v": 0.38,
+      "nominal_hashrate_th": 104.0,
+      "nominal_power_w": 3068.0,
+      "nominal_efficiency_jth": 29.5
+    },
+    {
+      "device_id": "ASIC-008",
+      "model": "S19jPro",
+      "stock_clock_ghz": 1.2,
+      "stock_voltage_v": 0.38,
+      "nominal_hashrate_th": 104.0,
+      "nominal_power_w": 3068.0,
+      "nominal_efficiency_jth": 29.5
+    },
+    {
+      "device_id": "ASIC-009",
+      "model": "S19jPro",
+      "stock_clock_ghz": 1.2,
+      "stock_voltage_v": 0.38,
+      "nominal_hashrate_th": 104.0,
+      "nominal_power_w": 3068.0,
+      "nominal_efficiency_jth": 29.5
+    }
+  ],
+  "anomalies_injected": [
+    {
+      "device_id": "ASIC-007",
+      "type": "thermal_deg",
+      "start_day": 8,
+      "ramp_days": 15.0,
+      "severity": 0.7
+    },
+    {
+      "device_id": "ASIC-004",
+      "type": "thermal_deg",
+      "start_day": 18,
+      "ramp_days": 10.0,
+      "severity": 0.4
+    },
+    {
+      "device_id": "ASIC-003",
+      "type": "psu_instability",
+      "start_day": 14,
+      "ramp_days": 2.0,
+      "severity": 0.8
+    },
+    {
+      "device_id": "ASIC-009",
+      "type": "hashrate_decay",
+      "start_day": 5,
+      "ramp_days": 20.0,
+      "severity": 0.25
+    },
+    {
+      "device_id": "ASIC-002",
+      "type": "hashrate_decay",
+      "start_day": 22,
+      "ramp_days": 5.0,
+      "severity": 0.15
+    }
+  ],
+  "data_hash_sha256": "45def9ee582d371261eb2178f9158f48ba487e06075449966a9efcbf8ba96e03",
+  "fields": {
+    "timestamp": "ISO 8601 timestamp (5-min intervals)",
+    "device_id": "Unique device identifier (ASIC-XXX)",
+    "model": "Hardware model name",
+    "clock_ghz": "ASIC core clock frequency in GHz",
+    "voltage_v": "ASIC core voltage in volts",
+    "hashrate_th": "Observed hashrate in TH/s",
+    "power_w": "Total ASIC power consumption in watts",
+    "temperature_c": "Chip junction temperature in \u00b0C",
+    "cooling_power_w": "Cooling system power consumption in watts",
+    "ambient_temp_c": "Ambient air temperature at site in \u00b0C",
+    "energy_price_kwh": "Electricity spot price in $/kWh",
+    "operating_mode": "Current mode: normal|overclock|underclock|idle",
+    "efficiency_jth": "Instantaneous efficiency: power_w / hashrate_th (J/TH)",
+    "label_thermal_deg": "Ground truth: thermal degradation active (0/1)",
+    "label_psu_instability": "Ground truth: PSU voltage instability active (0/1)",
+    "label_hashrate_decay": "Ground truth: chip degradation / hashrate decay active (0/1)",
+    "label_any_anomaly": "Ground truth: any anomaly active (0/1)"
+  }
+}
