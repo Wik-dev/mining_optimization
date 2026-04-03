@@ -15,8 +15,15 @@ Tiers:
 
 Safety overrides (applied before tier logic):
     - Thermal hard limit: T > 80°C → force underclock + max cooling
-    - Overvoltage: V > 110% stock → reset to stock voltage
+    - Thermal emergency low: T < 10°C → sleep mode + immediate inspection (coolant freeze risk)
+    - Thermal low warning: T < 20°C → underclock to 70% + minimize fan (air-cooled only)
+    - Overvoltage: V > 110% stock → reset frequency to stock (V/f coupled)
     - Fleet redundancy: never schedule all devices of same model simultaneously
+
+MOS platform alignment:
+    - All commands mapped to MOS RPC methods (setFrequency, setPowerMode, etc.)
+    - No set_voltage commands — voltage is V/f coupled, controlled implicitly via frequency
+    - Actions annotated with MOS error codes from the alert taxonomy
 
 Inputs:  fleet_risk_scores.json, kpi_timeseries.parquet, fleet_metadata.json
 Outputs: fleet_actions.json
@@ -37,9 +44,80 @@ DEGRADED_TE_SCORE = 0.8
 THERMAL_HARD_LIMIT_C = 80.0
 OVERVOLTAGE_PCT = 1.10  # 110% of stock
 
+# Gap 1: Two-tier low-temperature alert.
+# Hydro-cooled site at 64.5°N (northern Sweden/Finland). Real risk at low temps is coolant
+# viscosity increase and condensation on PCBs, not chip damage. Below 10°C, ethylene glycol
+# coolant approaches viscosity limits for standard pump configurations — flow rate drops,
+# causing localized hotspots despite low ambient. MOS inlet temp thresholds: 25°C warning,
+# 20°C critical (low). We add a second emergency tier for freeze risk.
+THERMAL_LOW_LIMIT_C = 20.0       # Low-temperature warning — reduce clock, minimize fan (air-cooled)
+THERMAL_EMERGENCY_LOW_C = 10.0   # Emergency low — sleep mode, coolant freeze risk
+
 # Overclock suggestion conditions
 OVERCLOCK_HEADROOM_C = 10.0
 OVERCLOCK_BOOST = 1.05  # 5% overclock
+
+# ── MOS Platform Mappings ─────────────────────────────────────────────────────
+# Gap 2: MOS command mapping. MOS exposes RPC methods, not raw register writes.
+# Voltage is NOT independently controllable — it's coupled to frequency via the
+# ASIC's V/f curve (set in firmware). setFrequency implicitly adjusts voltage.
+# Source: miningos-wrk-miner-antminer, miningos-wrk-miner-whatsminer repos.
+MOS_COMMAND_MAP = {
+    "set_clock":              "setFrequency",       # Primary tuning control
+    "set_power_mode":         "setPowerMode",        # normal / sleep
+    "set_fan_mode":           "setFanControl",       # Air-cooled only; no MOS method for hydro pumps
+    "schedule_inspection":    None,                  # Operational — no MOS RPC equivalent
+    "set_monitoring_interval": None,                 # Internal pipeline config, not a device command
+    "hold_settings":          None,                  # No-op — no MOS RPC needed
+    "suggest_overclock":      "setFrequency",        # Same method, higher target
+    "reboot":                 "reboot",
+}
+
+# Gap 3: MOS error codes. Maps our anomaly tiers to MOS alert code taxonomy.
+# Source: MOS alert config (miningos-wrk-miner-antminer/config).
+# This is a tier-based approximation — production would use per-anomaly-type
+# classifier output for exact code mapping (e.g., which specific voltage fault).
+MOS_ALERT_CODES = {
+    "P:1": "High temperature protection triggered",
+    "P:2": "Low temperature protection triggered",
+    "R:1": "Low hashrate",
+    "N:1": "High hashrate (anomalous)",
+    "V:1": "Power initialization error",
+    "V:2": "PSU not calibrated",
+    "J0:8": "Insufficient hashboards",
+    "J0:6": "Temperature sensor error",
+    "L0:1": "Voltage/frequency exceeds limit",
+    "L0:2": "Voltage/frequency mismatch",
+    "J0:2": "Chip insufficiency",
+    "M:1": "Memory allocation error",
+}
+
+# Tier-to-anomaly-code mapping. CRITICAL/WARNING tiers correlate with specific
+# MOS error families. This is approximate — a real integration would map from
+# the anomaly classifier's per-type output, not from the aggregate tier.
+TIER_ANOMALY_MAP = {
+    "CRITICAL": {
+        "thermal_deg": ["P:1", "P:2"],
+        "psu_instability": ["V:1", "L0:1"],
+        "hashrate_decay": ["R:1", "J0:8"],
+        "general": ["P:1", "V:1", "R:1"],
+    },
+    "WARNING": {
+        "thermal_deg": ["P:1"],
+        "psu_instability": ["V:2", "L0:2"],
+        "hashrate_decay": ["R:1", "J0:2"],
+        "general": ["P:1", "V:2", "R:1"],
+    },
+    "DEGRADED": {
+        "thermal_deg": ["J0:6"],
+        "psu_instability": ["L0:2"],
+        "hashrate_decay": ["R:1"],
+        "general": ["R:1"],
+    },
+    "HEALTHY": {
+        "general": [],
+    },
+}
 
 
 def load_stock_specs(meta: dict) -> dict:
@@ -75,7 +153,7 @@ def apply_safety_overrides(risk: dict, stock: dict) -> list:
     overrides = []
     snap = risk["latest_snapshot"]
 
-    # Thermal hard limit
+    # ── High temperature: thermal hard limit (80°C) ───────────────────────
     if snap["temperature_c"] > THERMAL_HARD_LIMIT_C:
         target_clock = round(stock["stock_clock_ghz"] * 0.80, 4)
         overrides.append({
@@ -84,11 +162,58 @@ def apply_safety_overrides(risk: dict, stock: dict) -> list:
             "override": "thermal_hard_limit_80C",
         })
 
-    # Overvoltage protection
+    # ── Low temperature: emergency freeze risk (< 10°C) ──────────────────
+    # Below 10°C, coolant viscosity spikes — pump flow drops, risk of localized
+    # hotspots and condensation. Sleep mode eliminates heat generation entirely;
+    # immediate inspection to check coolant state and condensation on PCBs.
+    elif snap["temperature_c"] < THERMAL_EMERGENCY_LOW_C:
+        overrides.append({
+            "command": {"type": "set_power_mode", "value": "sleep", "priority": "CRITICAL"},
+            "reason": (f"SAFETY: temperature {snap['temperature_c']:.1f}°C < {THERMAL_EMERGENCY_LOW_C}°C "
+                       "— coolant freeze risk, condensation hazard"),
+            "override": "thermal_emergency_low_10C",
+        })
+        overrides.append({
+            "command": {"type": "schedule_inspection", "urgency": "immediate", "priority": "CRITICAL"},
+            "reason": "SAFETY: immediate inspection required — check coolant viscosity and PCB condensation",
+            "override": "thermal_emergency_low_10C",
+        })
+
+    # ── Low temperature: warning (< 20°C) ────────────────────────────────
+    # Reduce clock to 70% to lower heat dissipation demand. For air-cooled models,
+    # set fan to minimum to retain heat. For hydro units, fan command is N/A —
+    # the relevant control would be pump speed, which MOS doesn't expose directly.
+    elif snap["temperature_c"] < THERMAL_LOW_LIMIT_C:
+        target_clock = round(stock["stock_clock_ghz"] * 0.70, 4)
+        overrides.append({
+            "command": {"type": "set_clock", "value_ghz": target_clock, "priority": "HIGH"},
+            "reason": (f"SAFETY: temperature {snap['temperature_c']:.1f}°C < {THERMAL_LOW_LIMIT_C}°C "
+                       "— low-temp warning, reduce power to manage coolant conditions"),
+            "override": "thermal_low_limit_20C",
+        })
+        # Fan control only meaningful for air-cooled models. Hydro units use liquid loop —
+        # fan command is N/A; the relevant control would be pump speed reduction.
+        model = stock.get("model", "")
+        is_hydro = "HYD" in model.upper() or "HYDRO" in model.upper()
+        if not is_hydro:
+            overrides.append({
+                "command": {"type": "set_fan_mode", "value": "min", "priority": "HIGH"},
+                "reason": "Low temp: minimize fan speed to retain heat (air-cooled only)",
+                "override": "thermal_low_limit_20C",
+            })
+
+    # ── Overvoltage protection ────────────────────────────────────────────
+    # MOS does not expose direct voltage control — voltage is coupled to frequency
+    # via the ASIC's V/f curve. Reducing frequency to stock implicitly restores
+    # nominal voltage. This replaces the previous set_voltage command.
     if snap["voltage_v"] > stock["stock_voltage_v"] * OVERVOLTAGE_PCT:
         overrides.append({
-            "command": {"type": "set_voltage", "value_v": stock["stock_voltage_v"], "priority": "CRITICAL"},
-            "reason": f"SAFETY: voltage {snap['voltage_v']:.4f}V > {OVERVOLTAGE_PCT:.0%} of stock ({stock['stock_voltage_v']:.3f}V)",
+            "command": {
+                "type": "set_clock", "value_ghz": stock["stock_clock_ghz"], "priority": "CRITICAL",
+                "note": "V/f coupled — voltage adjusts implicitly with frequency",
+            },
+            "reason": (f"SAFETY: voltage {snap['voltage_v']:.4f}V > {OVERVOLTAGE_PCT:.0%} of stock "
+                       f"({stock['stock_voltage_v']:.3f}V) — reset frequency to stock to restore nominal V/f point"),
             "override": "overvoltage_110pct_stock",
         })
 
@@ -102,9 +227,10 @@ def generate_tier_commands(tier: str, risk: dict, stock: dict) -> list:
 
     if tier == "CRITICAL":
         target_clock = round(stock["stock_clock_ghz"] * 0.70, 4)
-        target_voltage = round(stock["stock_voltage_v"] * 0.95, 4)
-        commands.append({"type": "set_clock", "value_ghz": target_clock, "priority": "HIGH"})
-        commands.append({"type": "set_voltage", "value_v": target_voltage, "priority": "HIGH"})
+        # V/f coupled — reducing frequency to 70% implicitly reduces voltage via the
+        # ASIC's V/f curve. No standalone set_voltage; MOS only exposes setFrequency.
+        commands.append({"type": "set_clock", "value_ghz": target_clock, "priority": "HIGH",
+                         "note": "V/f coupled — voltage adjusts implicitly with frequency"})
         commands.append({"type": "schedule_inspection", "urgency": "immediate", "priority": "HIGH"})
         commands.append({"type": "set_monitoring_interval", "value_seconds": 60, "priority": "MEDIUM"})
 
@@ -115,9 +241,12 @@ def generate_tier_commands(tier: str, risk: dict, stock: dict) -> list:
         commands.append({"type": "set_monitoring_interval", "value_seconds": 120, "priority": "LOW"})
 
     elif tier == "DEGRADED":
-        # Nudge voltage back toward stock if drifting
+        # Frequency reset to stock to restore nominal V/f operating point.
+        # MOS doesn't expose voltage directly — resetting frequency is the correct
+        # way to bring voltage back to nominal via the V/f curve.
         if abs(snap["voltage_v"] - stock["stock_voltage_v"]) > 0.01:
-            commands.append({"type": "set_voltage", "value_v": stock["stock_voltage_v"], "priority": "LOW"})
+            commands.append({"type": "set_clock", "value_ghz": stock["stock_clock_ghz"], "priority": "LOW",
+                             "note": "Frequency reset to stock to restore nominal V/f operating point"})
         commands.append({"type": "set_monitoring_interval", "value_seconds": 180, "priority": "LOW"})
 
     else:  # HEALTHY
@@ -174,6 +303,38 @@ def apply_fleet_redundancy(actions: list) -> list:
             deferred.append(defer["device_id"])
 
     return deferred
+
+
+def annotate_mos_methods(actions: list) -> None:
+    """Annotate each command with its MOS RPC method name.
+
+    Ensures fleet_actions.json never contains a command type that doesn't have a
+    known MOS mapping. Commands without a direct MOS method (e.g., schedule_inspection)
+    are marked as operational/internal.
+    """
+    for action in actions:
+        for cmd in action.get("commands", []):
+            cmd_type = cmd["type"]
+            mos_method = MOS_COMMAND_MAP.get(cmd_type)
+            if mos_method:
+                cmd["mos_method"] = mos_method
+            else:
+                cmd["mos_method"] = None
+                cmd["mos_note"] = "Operational — no direct MOS RPC equivalent"
+
+
+def annotate_mos_alert_codes(actions: list) -> None:
+    """Annotate each action with relevant MOS alert codes based on tier.
+
+    Uses TIER_ANOMALY_MAP for tier-based approximation. In production, this would
+    use the per-anomaly-type classifier output for exact code mapping.
+    """
+    for action in actions:
+        tier = action.get("tier", "HEALTHY")
+        tier_codes = TIER_ANOMALY_MAP.get(tier, {})
+        # Use 'general' mapping since we don't have per-anomaly breakdown at action level
+        codes = tier_codes.get("general", [])
+        action["mos_alert_codes"] = codes
 
 
 def main():
@@ -240,6 +401,10 @@ def main():
     if deferred_devices:
         safety_constraints_applied.add("fleet_redundancy_per_model")
         print(f"Fleet redundancy: deferred inspection for {deferred_devices}")
+
+    # ── MOS platform annotations ──────────────────────────────────────────
+    annotate_mos_methods(actions)
+    annotate_mos_alert_codes(actions)
 
     # ── Summary ──────────────────────────────────────────────────────────
     tier_counts = {}

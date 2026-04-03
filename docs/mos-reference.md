@@ -62,7 +62,7 @@ Reference documentation for MiningOS and the Mining Development Kit, grounded in
 | Inlet (high) | 40°C | 45°C |
 | Inlet (low) | 25°C | 20°C |
 
-Our pipeline uses 80°C as the thermal hard limit in `optimize.py` — aligned with the PCB critical threshold from this worker.
+Our pipeline uses 80°C as the thermal hard limit in `optimize.py` — aligned with the PCB critical threshold from this worker. Low-temperature alerts are also implemented: 20°C warning (underclock + fan min for air-cooled) and 10°C emergency (sleep mode + inspection for coolant freeze risk at the 64.5°N site).
 
 **Nominal efficiency (W/TH/s):**
 
@@ -81,7 +81,7 @@ Our pipeline uses 80°C as the thermal hard limit in `optimize.py` — aligned w
 - Fan speed configuration
 - `setPools` — pool endpoint and credentials
 
-Our controller (`optimize.py`) emits `set_clock`, `set_voltage`, and `schedule_inspection` commands — these map to `setFrequency`, `setPowerMode`, and operator alerts in the Antminer worker.
+Our controller (`optimize.py`) emits `set_clock`, `set_power_mode`, `set_fan_mode`, and `schedule_inspection` commands. These map to `setFrequency`, `setPowerMode`, `setFanControl`, and operator alerts respectively. No `set_voltage` commands are emitted — voltage is V/f coupled and managed implicitly through frequency adjustment. Every command is annotated with its MOS RPC method via `MOS_COMMAND_MAP`.
 
 ### Whatsminer Worker — [tetherto/miningos-wrk-miner-whatsminer](https://github.com/tetherto/miningos-wrk-miner-whatsminer)
 
@@ -112,7 +112,7 @@ voting → cancelled
          ↑ any single negative vote (fail-closed)
 ```
 
-This maps directly onto our Validance pipeline: the orchestrator's `pushAction` + `voteAction` is analogous to a Validance approval gate. Our controller's tier-based commands would flow through this voting system in production.
+This maps directly onto our pipeline: the orchestrator's `pushAction` + `voteAction` is analogous to an approval gate. Our controller's tier-based commands would flow through this voting system in production.
 
 **Fleet aggregation operations:** `sum`, `avg`, `obj_concat`, `arr_concat`, `alerts_aggr` — enabling cross-rack queries like "all miners with efficiency > 20 W/TH/s and temp > 70°C" in a single call.
 
@@ -159,9 +159,11 @@ temp_ambient               →   ambient_temp_c                ingest
 (pool hashrate averages)   →   (future: pool integration)    —
 
 setFrequency               ←   set_clock command             optimize
-setPowerMode               ←   set_clock (idle mode)         optimize
+setPowerMode               ←   set_power_mode (sleep/normal) optimize
+setFanControl              ←   set_fan_mode (air-cooled)     optimize
 (operator alert)           ←   schedule_inspection           optimize
-pushAction + voteAction    ←   Validance approval gate       workflow
+pushAction + voteAction    ←   approval gate                 workflow
+(alert codes P:1, R:1...)  ←   mos_alert_codes annotation    optimize
 ```
 
 ## Browse All Repos

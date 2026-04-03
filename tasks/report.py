@@ -232,12 +232,22 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
             <td>{flag}</td>
         </tr>"""
 
-    # Controller actions table
+    # Controller actions table — includes MOS alert codes (Gap 3)
     actions_html = ""
     for a in actions_data["actions"]:
         tier_color = TIER_COLORS.get(a["tier"], "#666")
         tier_badge = f'<span style="color:{tier_color};font-weight:bold">{a["tier"]}</span>'
         cmds = ", ".join(c["type"] for c in a["commands"])
+        # MOS method annotations — show the MOS RPC method for each command
+        mos_methods = set()
+        for c in a["commands"]:
+            m = c.get("mos_method")
+            if m:
+                mos_methods.add(m)
+        mos_methods_str = ", ".join(sorted(mos_methods)) if mos_methods else '<span style="color:#999">—</span>'
+        # MOS alert codes
+        mos_codes = a.get("mos_alert_codes", [])
+        mos_codes_str = ", ".join(mos_codes) if mos_codes else '<span style="color:#999">—</span>'
         rationale = "<br>".join(a["rationale"])
         actions_html += f"""
         <tr>
@@ -247,6 +257,8 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
             <td>{a['risk_score']:.3f}</td>
             <td>{a['te_score']:.3f}</td>
             <td style="font-size:11px">{cmds}</td>
+            <td style="font-size:11px">{mos_methods_str}</td>
+            <td style="font-size:11px">{mos_codes_str}</td>
             <td style="font-size:11px">{rationale}</td>
         </tr>"""
 
@@ -340,8 +352,32 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
     <div class="chart"><img src="data:image/png;base64,{charts['controller_tiers']}" /></div>
 
     <table>
-        <tr><th>Device</th><th>Model</th><th>Tier</th><th>Risk</th><th>TE Score</th><th>Commands</th><th>Rationale</th></tr>
+        <tr><th>Device</th><th>Model</th><th>Tier</th><th>Risk</th><th>TE Score</th><th>Commands</th><th>MOS Methods</th><th>MOS Codes</th><th>Rationale</th></tr>
         {actions_html}
+    </table>
+
+    <div style="background: #FFF3E0; border-left: 4px solid #FF9800; padding: 12px 16px;
+                margin: 15px 0; font-size: 13px; color: #E65100;">
+        <strong>Production Safety Note:</strong> In a live MOS deployment, controller commands pass through
+        the orchestrator's <strong>multi-voter approval system</strong> before execution
+        (<code>reqVotesPos: 2</code>, <code>reqVotesNeg: 1</code>). Two positive votes are required to approve
+        any write operation; a single negative vote cancels it. The commands shown here represent
+        <em>recommendations</em> that would enter this approval queue — they do not execute immediately.
+    </div>
+
+    <h3>MOS Alert Code Reference</h3>
+    <table>
+        <tr><th>Code</th><th>Description</th><th>Severity</th></tr>
+        <tr><td>P:1</td><td>High temperature protection triggered</td><td>Critical</td></tr>
+        <tr><td>P:2</td><td>Low temperature protection triggered</td><td>Critical</td></tr>
+        <tr><td>R:1</td><td>Low hashrate</td><td>High</td></tr>
+        <tr><td>V:1</td><td>Power initialization error</td><td>Critical</td></tr>
+        <tr><td>V:2</td><td>PSU not calibrated</td><td>High</td></tr>
+        <tr><td>J0:8</td><td>Insufficient hashboards</td><td>Critical</td></tr>
+        <tr><td>L0:1</td><td>Voltage/frequency exceeds limit</td><td>Critical</td></tr>
+        <tr><td>L0:2</td><td>Voltage/frequency mismatch</td><td>High</td></tr>
+        <tr><td>J0:2</td><td>Chip insufficiency</td><td>High</td></tr>
+        <tr><td>J0:6</td><td>Temperature sensor error</td><td>High</td></tr>
     </table>
 
     <h2>True Efficiency Over Time</h2>
@@ -350,6 +386,12 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
     <h2>TE Decomposition by Device</h2>
     <p>Breakdown into hardware baseline (TE_base), voltage penalty, and cooling overhead.</p>
     <div class="chart"><img src="data:image/png;base64,{charts['te_decomposition']}" /></div>
+
+    <p style="font-size: 12px; color: #666; margin-top: 5px; font-style: italic;">
+        <strong>Unit note:</strong> This report uses J/TH (joules per terahash). The MOS platform convention is
+        W/TH/s (watts per terahash per second). These are <strong>equivalent units</strong>:
+        1 J/TH = 1 W&middot;s/TH = 1 W/TH/s. For example, our 15 J/TH = MOS's 15 W/TH/s.
+    </p>
 
     <h2>Device Health Score</h2>
     <p>TE_score over time. Green = nominal (1.0), red = degraded (&lt;0.8).</p>
@@ -383,7 +425,7 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
         Accuracy: {metrics['accuracy']:.1%} |
         F1: {metrics['f1_score']:.1%} |
         Controller: {actions_data['controller_version']} |
-        Workflow: mdk.fleet_intelligence (Validance)
+        Workflow: mdk.fleet_intelligence
     </div>
 </body>
 </html>"""

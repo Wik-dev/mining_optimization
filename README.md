@@ -14,13 +14,13 @@ This is a design-thinking exploration — the focus is on problem framing, data 
 
 ## Pipeline Architecture
 
-7-task DAG executed through the Validance workflow engine:
+7-task DAG executed through a workflow engine with containerized tasks, deterministic re-execution, and full audit trail:
 
 ```
 Telemetry → Features → KPI → Model → Scoring → Controller → Report
 
 [1] ingest_telemetry        CSV + metadata → Parquet (86,400 rows)
-[2] engineer_features       53 features: rolling stats, rates, fleet z-scores
+[2] engineer_features       55 features: rolling stats, rates, fleet z-scores
 [3] compute_true_efficiency TE formula: voltage-normalized, ambient-corrected
 [4a] train_anomaly_model    XGBoost → anomaly_model.joblib (F1=92.8%)
 [4b] score_fleet            Load model, score last 24h window
@@ -32,10 +32,12 @@ Telemetry → Features → KPI → Model → Scoring → Controller → Report
 
 | Document | Contents |
 |----------|----------|
+| [`docs/system-overview.md`](docs/system-overview.md) | Architecture, pipeline DAG, data flow, controller tiers, tech stack |
+| [`docs/technical-report.md`](docs/technical-report.md) | Assignment deliverable: 9-section technical report |
 | [`docs/true-efficiency-kpi.md`](docs/true-efficiency-kpi.md) | True Efficiency KPI formulation, decomposition, health scoring |
 | [`docs/data-generation.md`](docs/data-generation.md) | Synthetic data generator: physics model, anomaly injection, configuration |
 | [`docs/mos-reference.md`](docs/mos-reference.md) | MOS/MDK source reference: telemetry fields, control commands, architecture mapping |
-| [`docs/technical-report.md`](docs/technical-report.md) | Assignment deliverable: 7-section technical report |
+| [`docs/mos_platform_audit.md`](docs/mos_platform_audit.md) | MOS platform audit: gap analysis, mitigation status, integration roadmap |
 
 ## Project Materials
 

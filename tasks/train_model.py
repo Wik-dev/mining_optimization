@@ -47,6 +47,12 @@ FEATURE_COLS = [
     # Site conditions
     "ambient_temp_c", "energy_price_kwh",
 ]
+# Available but not yet included: hashrate_th_mean_30m, hashrate_th_std_30m
+# (30-min rolling hashrate, approximating MOS hashrate_30m resolution).
+# These features are computed in features.py and present in the parquet.
+# Include in future model iterations once we evaluate their predictive lift
+# for hashrate_decay detection — the 30m window may capture gradual degradation
+# patterns better than the 1h window.
 
 LABEL_COL = "label_any_anomaly"
 

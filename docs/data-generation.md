@@ -2,7 +2,7 @@
 
 ## Overview
 
-`modules/generate_synthetic_data.py` produces a reproducible synthetic telemetry dataset simulating a 10-device ASIC mining fleet over 30 days. Deterministic (seed=42), single-script, zero external dependencies.
+`scripts/generate_synthetic_data.py` produces a reproducible synthetic telemetry dataset simulating a 10-device ASIC mining fleet over 30 days. Deterministic (seed=42), single-script, zero external dependencies.
 
 ## How Data Are Generated
 
@@ -92,8 +92,7 @@ Anomaly schedules are defined in `create_anomaly_schedule()` — device index, t
 ## Usage
 
 ```bash
-cd modules/
-python generate_synthetic_data.py
+python scripts/generate_synthetic_data.py
 ```
 
-Outputs to `data/` by default. Prints fleet composition, anomaly schedule, and summary statistics on completion.
+Outputs to `data/generated/` by default. Prints fleet composition, anomaly schedule, and summary statistics on completion.

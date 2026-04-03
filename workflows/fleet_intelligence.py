@@ -33,7 +33,7 @@ TASK_IMAGE = "python:3.11-slim"
 
 
 def create_workflow() -> Workflow:
-    """Entry point for Validance workflow discovery."""
+    """Entry point for workflow discovery."""
 
     wf = Workflow("mdk.fleet_intelligence")
 

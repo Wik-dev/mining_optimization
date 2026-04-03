@@ -15,9 +15,12 @@ import pandas as pd
 import numpy as np
 
 # Rolling window sizes (in samples; 1 sample = 5 min)
-WINDOW_SHORT = 12     # 1 hour
-WINDOW_MEDIUM = 144   # 12 hours
-WINDOW_LONG = 288     # 24 hours
+# MOS provides hashrate at 5s/5m/30m resolutions. Our 5-min sampling can't replicate
+# the 5s granularity, but we approximate the hierarchy with multi-resolution windows.
+WINDOW_VERY_SHORT = 6  # 30 min — maps to MOS hashrate_30m smoothed trend
+WINDOW_SHORT = 12      # 1 hour
+WINDOW_MEDIUM = 144    # 12 hours
+WINDOW_LONG = 288      # 24 hours
 
 TELEMETRY_COLS = [
     "temperature_c", "power_w", "hashrate_th",
@@ -76,6 +79,15 @@ def add_rolling_features(group: pd.DataFrame) -> pd.DataFrame:
         std_24h = g[f"{col}_std_24h"].replace(0, np.nan)
         g[f"{col}_dev_24h"] = (series - g[f"{col}_mean_24h"]) / std_24h
         g[f"{col}_dev_24h"] = g[f"{col}_dev_24h"].fillna(0)
+
+    # 30-min hashrate window — approximates MOS hashrate_30m smoothed trend.
+    # Only computed for hashrate: this is the field where MOS provides multi-resolution
+    # data (5s/5m/30m). Our 5-min sampling interval means the 30m window uses 6 samples,
+    # which captures the same smoothing horizon but not the intra-sample volatility.
+    hr = g["hashrate_th"]
+    roll_vs = hr.rolling(WINDOW_VERY_SHORT, min_periods=1)
+    g["hashrate_th_mean_30m"] = roll_vs.mean()
+    g["hashrate_th_std_30m"] = roll_vs.std().fillna(0)
 
     return g
 
