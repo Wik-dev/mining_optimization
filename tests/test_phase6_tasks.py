@@ -96,6 +96,68 @@ class TestFleetStatus:
 class TestControlAction:
     """Test control_action.py actions and safety constraints."""
 
+    def test_maintenance_max_offline_constraint(self, pipeline_artifacts, pipeline_dir, tmp_path):
+        """Maintenance rejected when >20% fleet already offline (non-immediate)."""
+        import shutil
+
+        # Create isolated fleet dir with modified actions to simulate offline devices
+        mock_dir = str(tmp_path / "mock_fleet")
+        os.makedirs(mock_dir)
+        for f in ["fleet_risk_scores.json", "fleet_metadata.json"]:
+            shutil.copy2(os.path.join(pipeline_dir, f), os.path.join(mock_dir, f))
+
+        # Build fleet_actions.json with enough immediate inspections to hit the cap.
+        # With our fleet, max_offline = max(1, fleet_size * 20 / 100).
+        # We put 1 device at immediate inspection so the next non-immediate is rejected.
+        # Use different models to avoid hitting the per-model redundancy check first.
+        actions_data = pipeline_artifacts["fleet_actions"]
+        device_ids = [a["device_id"] for a in actions_data["actions"]]
+        models = ["S21-HYD", "S19XP", "M66S", "S19jPro"]
+
+        mock_actions = {
+            "controller_version": actions_data["controller_version"],
+            "scoring_window": actions_data["scoring_window"],
+            "tier_counts": actions_data["tier_counts"],
+            "actions": [
+                {
+                    "device_id": device_ids[0],
+                    "model": models[0],
+                    "tier": "CRITICAL",
+                    "risk_score": 0.95,
+                    "te_score": 0.6,
+                    "commands": [
+                        {"type": "schedule_inspection", "urgency": "immediate", "priority": "CRITICAL"}
+                    ],
+                    "rationale": ["test"],
+                }
+            ] + [
+                {
+                    "device_id": did,
+                    "model": models[i % len(models)],
+                    "tier": "HEALTHY",
+                    "risk_score": 0.1,
+                    "te_score": 0.95,
+                    "commands": [],
+                    "rationale": ["healthy"],
+                }
+                for i, did in enumerate(device_ids[1:], start=1)
+            ],
+            "safety_constraints_applied": [],
+        }
+        with open(os.path.join(mock_dir, "fleet_actions.json"), "w") as f:
+            json.dump(mock_actions, f)
+
+        # Target a device with a different model than the one with immediate inspection
+        target = device_ids[1]
+        result = run_control_action(mock_dir, "maintenance", {
+            "device_id": target,
+            "maintenance_type": "inspection",
+            "urgency": "scheduled",
+            "reason": "test offline constraint",
+        }, expect_exit=1)
+        assert result["status"] == "rejected"
+        assert "20%" in result["reason"] or "capacity" in result["reason"].lower()
+
     def test_underclock_accepted(self, pipeline_artifacts, pipeline_dir):
         # Pick a device with higher risk for underclocking
         risks = pipeline_artifacts["fleet_risk_scores"]["device_risks"]
