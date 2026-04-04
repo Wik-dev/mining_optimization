@@ -1,0 +1,63 @@
+{
+  "name": "asic_aging",
+  "description": "Long-term degradation — 15 older-gen devices, 180 days, northern site. Tests hashrate decay, solder joint fatigue, firmware cliff, and capacitor aging over extended operation. Represents a fleet nearing end-of-life.",
+  "seed": 512,
+  "duration_days": 180,
+  "interval_minutes": 5,
+  "fleet": [
+    {"model": "S19XP", "count": 4},
+    {"model": "S19jPro", "count": 4},
+    {"model": "S19kPro", "count": 4},
+    {"model": "A1566", "count": 3}
+  ],
+  "site": {
+    "archetype": "northern",
+    "energy_cost_base_kwh": 0.035,
+    "energy_cost_peak_kwh": 0.065
+  },
+  "economic": {
+    "btc_price_usd": 66650,
+    "network_difficulty_t": 133.79,
+    "block_reward_btc": 3.125,
+    "pool_fee_pct": 1.5
+  },
+  "anomalies": [
+    {
+      "type": "hashrate_decay",
+      "device_indices": [1, 5, 9, 12],
+      "start_day": 10,
+      "ramp_days": 120,
+      "severity": 0.3
+    },
+    {
+      "type": "solder_joint_fatigue",
+      "device_indices": [2, 6, 10],
+      "start_day": 30,
+      "ramp_days": 100,
+      "severity": 0.5
+    },
+    {
+      "type": "firmware_cliff",
+      "device_indices": [8],
+      "start_day": 60,
+      "ramp_days": 10,
+      "severity": 0.7
+    },
+    {
+      "type": "capacitor_aging",
+      "device_indices": [3, 7],
+      "start_day": 20,
+      "ramp_days": 140,
+      "severity": 0.6
+    }
+  ],
+  "events": [
+    {"type": "cleaning", "day": 30, "device_indices": "all"},
+    {"type": "cleaning", "day": 60, "device_indices": "all"},
+    {"type": "cleaning", "day": 90, "device_indices": "all"},
+    {"type": "cleaning", "day": 120, "device_indices": "all"},
+    {"type": "cleaning", "day": 150, "device_indices": "all"},
+    {"type": "firmware_update", "day": 90, "device_indices": [8]},
+    {"type": "maintenance", "day": 120, "device_indices": [2, 6]}
+  ]
+}

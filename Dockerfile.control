@@ -1,0 +1,16 @@
+# Fleet Control Image — lightweight container for fleet status queries
+# and control actions (underclock, maintenance, shutdown).
+#
+# Python stdlib only — no ML deps, no pandas. ~50 MB image vs 500+ MB
+# for the full analysis pipeline image. Fast container starts (< 1s)
+# for proposal pipeline execution.
+#
+# Scripts baked in per IP policy: self-contained, no bind mounts.
+# Build: docker build -t fleet-control:latest -f Dockerfile.control .
+
+FROM python:3.11-slim
+
+COPY tasks/fleet_status.py /app/fleet_status.py
+COPY tasks/control_action.py /app/control_action.py
+
+WORKDIR /work

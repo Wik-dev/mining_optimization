@@ -8,10 +8,12 @@ RUN pip install --no-cache-dir \
     joblib==1.4.* \
     matplotlib==3.9.* \
     pyarrow==17.* \
-    scipy && \
+    scipy \
+    requests && \
     pip install --no-cache-dir --no-deps xgboost==2.1.*
 
-# Bake task scripts into the image
+# Bake task and simulation scripts into the image
 COPY tasks/ /app/tasks/
+COPY scripts/ /app/scripts/
 
 WORKDIR /app

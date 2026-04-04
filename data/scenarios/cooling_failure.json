@@ -1,0 +1,51 @@
+{
+  "name": "cooling_failure",
+  "description": "Both cooling types fail — 10 devices (4 hydro + 6 air), 60 days, northern site. Tests coolant loop fouling on hydro units, fan bearing wear on air-cooled, and thermal degradation.",
+  "seed": 314,
+  "duration_days": 60,
+  "interval_minutes": 5,
+  "fleet": [
+    {"model": "S21-HYD", "count": 4},
+    {"model": "S21", "count": 2},
+    {"model": "M60S", "count": 2},
+    {"model": "S19kPro", "count": 2}
+  ],
+  "site": {
+    "archetype": "northern",
+    "energy_cost_base_kwh": 0.035,
+    "energy_cost_peak_kwh": 0.065
+  },
+  "economic": {
+    "btc_price_usd": 66650,
+    "network_difficulty_t": 133.79,
+    "block_reward_btc": 3.125,
+    "pool_fee_pct": 1.5
+  },
+  "anomalies": [
+    {
+      "type": "coolant_loop_fouling",
+      "device_indices": [1, 3],
+      "start_day": 8,
+      "ramp_days": 40,
+      "severity": 0.8
+    },
+    {
+      "type": "fan_bearing_wear",
+      "device_indices": [5, 7, 9],
+      "start_day": 12,
+      "ramp_days": 35,
+      "severity": 0.75
+    },
+    {
+      "type": "thermal_deg",
+      "device_indices": [6],
+      "start_day": 20,
+      "ramp_days": 25,
+      "severity": 0.6
+    }
+  ],
+  "events": [
+    {"type": "cleaning", "day": 30, "device_indices": "all"},
+    {"type": "maintenance", "day": 45, "device_indices": [5, 7]}
+  ]
+}

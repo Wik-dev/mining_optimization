@@ -1,0 +1,43 @@
+{
+  "name": "psu_degradation",
+  "description": "PSU failure cascade — 10 devices, 90 days, northern site. Tests PSU instability and capacitor aging progression. Older-gen devices more susceptible to capacitor degradation.",
+  "seed": 256,
+  "duration_days": 90,
+  "interval_minutes": 5,
+  "fleet": [
+    {"model": "S21-HYD", "count": 2},
+    {"model": "M66S", "count": 2},
+    {"model": "S19XP", "count": 3},
+    {"model": "S19jPro", "count": 3}
+  ],
+  "site": {
+    "archetype": "northern",
+    "energy_cost_base_kwh": 0.035,
+    "energy_cost_peak_kwh": 0.065
+  },
+  "economic": {
+    "btc_price_usd": 66650,
+    "network_difficulty_t": 133.79,
+    "block_reward_btc": 3.125,
+    "pool_fee_pct": 1.5
+  },
+  "anomalies": [
+    {
+      "type": "psu_instability",
+      "device_indices": [3, 6, 8],
+      "start_day": 10,
+      "ramp_days": 30,
+      "severity": 0.8
+    },
+    {
+      "type": "capacitor_aging",
+      "device_indices": [7, 9],
+      "start_day": 15,
+      "ramp_days": 60,
+      "severity": 0.7
+    }
+  ],
+  "events": [
+    {"type": "maintenance", "day": 60, "device_indices": [3, 8]}
+  ]
+}

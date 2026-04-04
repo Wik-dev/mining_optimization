@@ -1,0 +1,28 @@
+{
+  "name": "baseline",
+  "description": "Healthy baseline — 10 devices (original fleet composition), 30 days, no anomalies. Northern site with hydro power, cool climate. Matches original generate_synthetic_data.py fleet for direct comparison.",
+  "seed": 42,
+  "duration_days": 30,
+  "interval_minutes": 5,
+  "fleet": [
+    {"model": "S21-HYD", "count": 2},
+    {"model": "M66S", "count": 2},
+    {"model": "S19XP", "count": 3},
+    {"model": "S19jPro", "count": 3}
+  ],
+  "site": {
+    "archetype": "northern",
+    "energy_cost_base_kwh": 0.035,
+    "energy_cost_peak_kwh": 0.065
+  },
+  "economic": {
+    "btc_price_usd": 66650,
+    "network_difficulty_t": 133.79,
+    "block_reward_btc": 3.125,
+    "pool_fee_pct": 1.5
+  },
+  "anomalies": [],
+  "events": [
+    {"type": "cleaning", "day": 15, "device_indices": "all"}
+  ]
+}

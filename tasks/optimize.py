@@ -7,6 +7,14 @@ applies safety overrides, and emits concrete operational commands per device.
 
 This is the "AI Controller → Command Execution" stage from the assignment.
 
+Version 2.0 adds cost-driven action selection: when cost_projections.json is
+available (from Phase 4 cost modeling), the controller layers economic
+recommendations on top of tier-based logic. Cost can escalate tier (e.g.,
+HEALTHY → DEGRADED if underclocking is economically optimal) or de-escalate
+(e.g., WARNING → HEALTHY if risk cost is low). Safety overrides always win.
+
+Without cost data, falls back to v1.1 tier+trend logic (backward compatible).
+
 Tiers:
     CRITICAL  — mean_risk > 0.9: underclock to 70%, schedule immediate inspection
     WARNING   — mean_risk > 0.5: underclock to 85%, schedule next-window inspection
@@ -19,21 +27,27 @@ Safety overrides (applied before tier logic):
     - Thermal low warning: T < 20°C → underclock to 70% + minimize fan (air-cooled only)
     - Overvoltage: V > 110% stock → reset frequency to stock (V/f coupled)
     - Fleet redundancy: never schedule all devices of same model simultaneously
+    - Fleet offline constraint: max 20% of devices offline simultaneously (Phase 4)
 
 MOS platform alignment:
     - All commands mapped to MOS RPC methods (setFrequency, setPowerMode, etc.)
     - No set_voltage commands — voltage is V/f coupled, controlled implicitly via frequency
     - Actions annotated with MOS error codes from the alert taxonomy
 
-Inputs:  fleet_risk_scores.json, kpi_timeseries.parquet, fleet_metadata.json
+Inputs:  fleet_risk_scores.json, kpi_timeseries.parquet, fleet_metadata.json,
+         cost_projections.json (optional — fallback to tier-only without it),
+         trend_analysis.json (optional — trend-aware escalation)
 Outputs: fleet_actions.json
 Vars:    actions_issued, devices_underclocked, devices_inspected
 """
 
 import json
+import os
+
 import pandas as pd
 
-CONTROLLER_VERSION = "1.0-rulebased"
+CONTROLLER_VERSION_TIER_ONLY = "1.1-trend-aware"
+CONTROLLER_VERSION_COST_DRIVEN = "2.0-cost-driven"
 
 # Tier thresholds
 CRITICAL_RISK = 0.9
@@ -56,6 +70,25 @@ THERMAL_EMERGENCY_LOW_C = 10.0   # Emergency low — sleep mode, coolant freeze 
 # Overclock suggestion conditions
 OVERCLOCK_HEADROOM_C = 10.0
 OVERCLOCK_BOOST = 1.05  # 5% overclock
+
+# ── Trend-Aware Constants ─────────────────────────────────────────────────────
+# Slope thresholds for trend-based tier escalation. Slopes are TE_score per hour.
+# A slope of -0.02/h means the device crosses a 0.2 TE_score band in 10 hours —
+# fast enough to warrant pre-emptive escalation before the static tier catches it.
+TREND_ESCALATION_SLOPE = -0.005   # Moderate decline: escalate HEALTHY → WARNING
+TREND_CRITICAL_SLOPE = -0.02      # Fast decline: escalate one step toward CRITICAL
+REGIME_CHANGE_ESCALATION = True   # CUSUM regime change → escalate HEALTHY to WARNING
+TREND_MIN_R2 = 0.3                # Minimum R² to trust trend for escalation
+
+# ── Cost-Driven Constants (Phase 4) ─────────────────────────────────────────
+# Cost-driven action selection maps economic recommendations to MOS commands.
+# The cost model's recommended action overrides tier commands when it makes
+# economic sense, but safety overrides ALWAYS take precedence.
+COST_ACTION_TO_UNDERCLOCK = {
+    "underclock_90pct": 0.90,
+    "underclock_80pct": 0.80,
+    "underclock_70pct": 0.70,
+}
 
 # ── MOS Platform Mappings ─────────────────────────────────────────────────────
 # Gap 2: MOS command mapping. MOS exposes RPC methods, not raw register writes.
@@ -133,19 +166,84 @@ def load_stock_specs(meta: dict) -> dict:
     return specs
 
 
-def classify_tier(risk: dict) -> str:
-    """Assign severity tier based on risk score and TE health."""
+def classify_tier(risk: dict, trend: dict | None = None) -> tuple:
+    """Assign severity tier based on risk score, TE health, and trend.
+
+    Base tier logic is unchanged from v1.0. When trend data is available
+    and R² >= TREND_MIN_R2, the tier can be escalated (never de-escalated)
+    based on the slope direction:
+    - slope < TREND_CRITICAL_SLOPE (-0.02/h): escalate one step toward CRITICAL
+    - slope < TREND_ESCALATION_SLOPE (-0.005/h) and HEALTHY: escalate to WARNING
+    - slope > +0.005 and DEGRADED: add RECOVERING annotation (no de-escalation)
+    - CUSUM regime change and HEALTHY: escalate to WARNING
+
+    De-escalation is deliberately avoided — conservative approach. A device
+    that looks like it's recovering could relapse; let the static tier
+    catch up naturally when risk scores improve.
+
+    Returns:
+        (tier: str, rationale_parts: list[str])
+    """
     mean_risk = risk["mean_risk"]
     te_score = risk["latest_snapshot"]["te_score"]
 
+    # ── Base tier (v1.0 logic, unchanged) ────────────────────────────────
     if mean_risk > CRITICAL_RISK:
-        return "CRITICAL"
+        base_tier = "CRITICAL"
     elif mean_risk > WARNING_RISK:
-        return "WARNING"
+        base_tier = "WARNING"
     elif te_score < DEGRADED_TE_SCORE and mean_risk <= WARNING_RISK:
-        return "DEGRADED"
+        base_tier = "DEGRADED"
     else:
-        return "HEALTHY"
+        base_tier = "HEALTHY"
+
+    tier = base_tier
+    rationale = []
+
+    # ── Trend-based escalation (v1.1) ───────────────────────────────────
+    if trend is None:
+        return tier, rationale
+
+    slope = trend.get("primary_slope_per_hour", 0.0)
+    r2 = trend.get("primary_r_squared", 0.0)
+    direction = trend.get("primary_direction", "stable")
+    regime = trend.get("regime", {})
+    regime_change = regime.get("change_detected", False)
+
+    if r2 >= TREND_MIN_R2:
+        # Fast decline: escalate one step toward CRITICAL
+        if slope < TREND_CRITICAL_SLOPE:
+            ESCALATION = {"HEALTHY": "WARNING", "WARNING": "CRITICAL", "DEGRADED": "CRITICAL"}
+            new_tier = ESCALATION.get(tier)
+            if new_tier and new_tier != tier:
+                rationale.append(
+                    f"TREND: slope {slope:.4f}/h (R²={r2:.2f}) → escalated {tier}→{new_tier}"
+                )
+                tier = new_tier
+
+        # Moderate decline: escalate HEALTHY → WARNING
+        elif slope < TREND_ESCALATION_SLOPE and tier == "HEALTHY":
+            rationale.append(
+                f"TREND: declining slope {slope:.4f}/h (R²={r2:.2f}) → escalated HEALTHY→WARNING"
+            )
+            tier = "WARNING"
+
+        # Recovery annotation (no de-escalation)
+        elif slope > 0.005 and base_tier == "DEGRADED":
+            rationale.append(
+                f"TREND: recovering (slope +{slope:.4f}/h, R²={r2:.2f}) — monitoring"
+            )
+
+    # CUSUM regime change escalation
+    if REGIME_CHANGE_ESCALATION and regime_change and base_tier == "HEALTHY":
+        if tier == "HEALTHY":  # Only if not already escalated by slope
+            rationale.append(
+                f"TREND: regime change detected (CUSUM, direction={regime.get('direction', '?')}) "
+                f"→ escalated HEALTHY→WARNING"
+            )
+            tier = "WARNING"
+
+    return tier, rationale
 
 
 def apply_safety_overrides(risk: dict, stock: dict) -> list:
@@ -337,6 +435,163 @@ def annotate_mos_alert_codes(actions: list) -> None:
         action["mos_alert_codes"] = codes
 
 
+# ── Cost-Driven Functions (Phase 4) ─────────────────────────────────────────
+
+def load_cost_projections() -> dict | None:
+    """Load cost_projections.json if available. Returns None for tier-only fallback."""
+    if not os.path.exists("cost_projections.json"):
+        return None
+    with open("cost_projections.json") as f:
+        return json.load(f)
+
+
+def cost_driven_action_selection(device_id: str, tier: str, device_cost: dict,
+                                 stock: dict, has_safety_override: bool) -> tuple:
+    """Map cost recommendation to MOS commands. Returns (new_tier, commands, rationale).
+
+    Cost projections can:
+    - Escalate tier: HEALTHY → DEGRADED if underclocking makes economic sense
+    - Override commands: replace tier-based underclock % with cost-optimal %
+    - Recommend shutdown: if device has negative profit at all action levels
+    - Recommend maintenance: if repair ROI is positive within the horizon
+
+    Safety overrides ALWAYS take precedence — if a safety override was triggered,
+    cost cannot de-escalate the tier or remove safety commands.
+    """
+    optimal = device_cost.get("optimal", {})
+    action = optimal.get("recommended_action", "do_nothing")
+    net = optimal.get("net_usd", 0)
+    hourly_profit = device_cost.get("hourly_profit_usd", 0)
+
+    commands = []
+    new_tier = tier
+    rationale = []
+
+    if action == "shutdown":
+        # Shutdown recommendation: device is unprofitable
+        if not has_safety_override:
+            if tier in ("HEALTHY", "DEGRADED"):
+                new_tier = "WARNING"
+            commands.append({"type": "set_power_mode", "value": "sleep", "priority": "MEDIUM",
+                             "note": "Cost-driven: device unprofitable, recommend shutdown"})
+            rationale.append(f"COST: shutdown recommended — hourly profit ${hourly_profit:.2f}, "
+                             f"net ${net:+.2f}/{optimal.get('horizon', '?')}")
+        else:
+            rationale.append("COST: shutdown recommended but safety override active — deferring")
+
+    elif action.startswith("underclock_"):
+        clock_fraction = COST_ACTION_TO_UNDERCLOCK.get(action, 0.85)
+        target_clock = round(stock["stock_clock_ghz"] * clock_fraction, 4)
+        pct = int(clock_fraction * 100)
+
+        if not has_safety_override:
+            # HEALTHY device underclocking for economics → escalate to DEGRADED
+            if tier == "HEALTHY":
+                new_tier = "DEGRADED"
+            commands.append({"type": "set_clock", "value_ghz": target_clock, "priority": "MEDIUM",
+                             "note": f"Cost-driven: underclock to {pct}% for optimal economics"})
+            rationale.append(f"COST: underclock to {pct}% — net ${net:+.2f}/{optimal.get('horizon', '?')}")
+        else:
+            rationale.append(f"COST: underclock_{pct}pct recommended but safety override active")
+
+    elif action == "schedule_maintenance":
+        if not has_safety_override:
+            commands.append({"type": "schedule_inspection", "urgency": "next_window",
+                             "priority": "MEDIUM",
+                             "note": "Cost-driven: maintenance ROI positive"})
+            rationale.append(f"COST: maintenance recommended — net ${net:+.2f}/{optimal.get('horizon', '?')}")
+        else:
+            rationale.append("COST: maintenance recommended but safety override active")
+
+    elif action == "do_nothing":
+        # Cost agrees with current operation
+        if tier == "WARNING" and not has_safety_override and net > 0:
+            rationale.append(f"COST: do_nothing optimal at ${net:+.2f}/{optimal.get('horizon', '?')} "
+                             "— risk cost acceptable, tier maintained for monitoring")
+        elif tier in ("HEALTHY", "DEGRADED"):
+            rationale.append(f"COST: do_nothing confirms current operation "
+                             f"(${hourly_profit:.2f}/hr profit)")
+
+    return new_tier, commands, rationale
+
+
+def apply_fleet_offline_constraint(actions: list, cost_projections: dict,
+                                   max_offline_pct: float) -> list:
+    """Enforce fleet-wide offline constraint: max N% of devices offline simultaneously.
+
+    When more devices are scheduled for maintenance/shutdown than allowed, defer
+    the least cost-beneficial ones. Greedy: sort by net economic benefit of taking
+    the device offline, keep the top N, defer the rest.
+
+    Runs AFTER fleet_redundancy (which is model-based, not fleet-wide).
+    """
+    total_devices = len(actions)
+    max_offline = max(1, int(total_devices * max_offline_pct / 100.0))
+
+    # Find devices going offline (maintenance or shutdown, excluding safety shutdowns)
+    offline_actions = []
+    for i, action in enumerate(actions):
+        is_offline = any(
+            (c["type"] == "schedule_inspection" and c.get("urgency") != "deferred")
+            or (c["type"] == "set_power_mode" and c.get("value") == "sleep"
+                and c.get("priority") != "CRITICAL")
+            for c in action.get("commands", [])
+        )
+        if is_offline:
+            cost_benefit = 0.0
+            if cost_projections:
+                for dp in cost_projections.get("device_projections", []):
+                    if dp["device_id"] == action["device_id"]:
+                        cost_benefit = dp.get("optimal", {}).get("net_usd", 0.0)
+                        break
+            offline_actions.append((i, cost_benefit, action))
+
+    if len(offline_actions) <= max_offline:
+        return []
+
+    # Sort by cost benefit descending — keep most beneficial offline, defer rest
+    offline_actions.sort(key=lambda x: x[1], reverse=True)
+
+    deferred = []
+    for idx, (i, benefit, action) in enumerate(offline_actions):
+        if idx >= max_offline:
+            device_id = action["device_id"]
+            action["commands"] = [
+                c for c in action["commands"]
+                if not (c["type"] == "schedule_inspection" and c.get("priority") != "CRITICAL")
+                and not (c["type"] == "set_power_mode" and c.get("value") == "sleep"
+                         and c.get("priority") != "CRITICAL")
+            ]
+            action["commands"].append({
+                "type": "schedule_inspection",
+                "urgency": "deferred",
+                "priority": "LOW",
+                "reason": (f"fleet_offline_constraint: max {max_offline_pct:.0f}% offline "
+                           f"({max_offline}/{total_devices}), deferred by cost rank"),
+            })
+            action["rationale"].append(
+                f"Maintenance deferred — fleet offline limit "
+                f"({max_offline}/{total_devices} slots used by higher-priority devices)"
+            )
+            deferred.append(device_id)
+
+    return deferred
+
+
+def load_trend_data() -> dict | None:
+    """Load trend analysis results. Returns None if not available.
+
+    Backward compatible: if trend_analysis.json doesn't exist (e.g., running
+    v1.0 pipeline or trend task was skipped), the controller falls back to
+    static tier logic.
+    """
+    try:
+        with open("trend_analysis.json") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+
+
 def main():
     # ── Load ─────────────────────────────────────────────────────────────
     with open("fleet_risk_scores.json") as f:
@@ -345,6 +600,28 @@ def main():
         meta = json.load(f)
 
     stock_specs = load_stock_specs(meta)
+
+    # Load trend data (optional — graceful fallback to v1.0 logic)
+    trend_data = load_trend_data()
+    trend_lookup = {}
+    if trend_data:
+        for dev_trend in trend_data.get("devices", []):
+            trend_lookup[dev_trend["device_id"]] = dev_trend
+        print(f"Loaded trend data: {len(trend_lookup)} devices")
+    else:
+        print("No trend_analysis.json found — using static tier logic (v1.0 fallback)")
+
+    # ── Load cost projections (Phase 4 — optional) ────────────────────────
+    cost_projections = load_cost_projections()
+    cost_lookup = {}
+    if cost_projections:
+        controller_version = CONTROLLER_VERSION_COST_DRIVEN
+        for dp in cost_projections.get("device_projections", []):
+            cost_lookup[dp["device_id"]] = dp
+        print(f"Cost projections loaded: {len(cost_lookup)} devices")
+    else:
+        controller_version = CONTROLLER_VERSION_TIER_ONLY
+        print("No cost_projections.json — using tier-only controller")
 
     # ── Process each device ──────────────────────────────────────────────
     actions = []
@@ -357,24 +634,50 @@ def main():
             print(f"Warning: no stock specs for {device_id}, skipping")
             continue
 
-        # Safety overrides first
+        # (1) Safety overrides first — these ALWAYS win
         overrides = apply_safety_overrides(risk, stock)
+        has_safety_override = len(overrides) > 0
         for ov in overrides:
             safety_constraints_applied.add(ov["override"])
 
-        # Tier classification
-        tier = classify_tier(risk)
+        # (2) Tier classification (trend-aware when data available)
+        device_trend = trend_lookup.get(device_id)
+        tier, trend_rationale = classify_tier(risk, trend=device_trend)
 
         # If safety override forced underclock, escalate tier to at least WARNING
         if overrides and tier == "HEALTHY":
             tier = "WARNING"
 
-        # Generate tier commands
-        commands = generate_tier_commands(tier, risk, stock)
+        # (3) Cost-driven action selection (Phase 4)
+        cost_commands = []
+        cost_rationale = []
+        cost_projection_summary = None
+        if device_id in cost_lookup:
+            device_cost = cost_lookup[device_id]
+            tier, cost_commands, cost_rationale = cost_driven_action_selection(
+                device_id, tier, device_cost, stock, has_safety_override
+            )
+            cost_projection_summary = {
+                "hourly_profit_usd": device_cost.get("hourly_profit_usd", 0),
+                "recommended_action": device_cost.get("optimal", {}).get("recommended_action", "unknown"),
+                "horizon": device_cost.get("optimal", {}).get("horizon", "unknown"),
+                "net_usd": device_cost.get("optimal", {}).get("net_usd", 0),
+                "rationale": device_cost.get("optimal", {}).get("rationale", ""),
+            }
 
-        # Prepend any safety override commands
+        # (4) Generate tier commands (fallback when no cost commands override)
+        tier_commands = generate_tier_commands(tier, risk, stock)
+
+        # Merge: safety overrides + cost commands (if any) + tier commands
+        # Cost commands replace tier commands for the same command type
         safety_commands = [ov["command"] for ov in overrides]
-        all_commands = safety_commands + commands
+
+        if cost_commands:
+            cost_types = {c["type"] for c in cost_commands}
+            filtered_tier = [c for c in tier_commands if c["type"] not in cost_types]
+            all_commands = safety_commands + cost_commands + filtered_tier
+        else:
+            all_commands = safety_commands + tier_commands
 
         # Build rationale
         rationale = []
@@ -384,6 +687,20 @@ def main():
         rationale.append(
             f"Risk {risk['mean_risk']:.2f}, TE_score {snap['te_score']:.3f} → tier {tier}"
         )
+        # Append trend-based rationale (v1.1)
+        rationale.extend(trend_rationale)
+        # Append cost-based rationale (v2.0)
+        rationale.extend(cost_rationale)
+
+        # Trend context (v1.1) — attached to action for downstream consumers
+        trend_context = None
+        if device_trend:
+            trend_context = {
+                "direction": device_trend.get("primary_direction", "unknown"),
+                "slope_per_hour": device_trend.get("primary_slope_per_hour", 0.0),
+                "r_squared": device_trend.get("primary_r_squared", 0.0),
+                "regime_change": device_trend.get("regime", {}).get("change_detected", False),
+            }
 
         action = {
             "device_id": device_id,
@@ -393,7 +710,12 @@ def main():
             "te_score": snap["te_score"],
             "commands": all_commands,
             "rationale": rationale,
+            "trend_context": trend_context,
         }
+        # Include cost projection summary when available (Phase 4)
+        if cost_projection_summary:
+            action["cost_projection"] = cost_projection_summary
+
         actions.append(action)
 
     # ── Fleet redundancy override ────────────────────────────────────────
@@ -401,6 +723,18 @@ def main():
     if deferred_devices:
         safety_constraints_applied.add("fleet_redundancy_per_model")
         print(f"Fleet redundancy: deferred inspection for {deferred_devices}")
+
+    # ── Fleet offline constraint (Phase 4) ────────────────────────────────
+    # When cost data is available, enforce max simultaneous offline percentage.
+    # Without cost data, skip (tier-only mode has no fleet-wide offline budgeting).
+    if cost_projections:
+        max_offline_pct = 20  # From cost_model.json fleet_constraints
+        offline_deferred = apply_fleet_offline_constraint(
+            actions, cost_projections, max_offline_pct
+        )
+        if offline_deferred:
+            safety_constraints_applied.add("fleet_offline_constraint_20pct")
+            print(f"Fleet offline constraint: deferred {offline_deferred}")
 
     # ── MOS platform annotations ──────────────────────────────────────────
     annotate_mos_methods(actions)
@@ -422,7 +756,7 @@ def main():
     )
     actions_issued = sum(len(a["commands"]) for a in actions)
 
-    print(f"\nController output:")
+    print(f"\nController output ({controller_version}):")
     print(f"  Tiers: {tier_counts}")
     print(f"  Actions issued: {actions_issued}")
     print(f"  Devices underclocked: {devices_underclocked}")
@@ -430,13 +764,17 @@ def main():
 
     for a in actions:
         tier_badge = {"CRITICAL": "🔴", "WARNING": "🟡", "DEGRADED": "🟠", "HEALTHY": "🟢"}.get(a["tier"], "⚪")
+        cost_info = ""
+        if "cost_projection" in a:
+            cp = a["cost_projection"]
+            cost_info = f"  profit=${cp['hourly_profit_usd']:.2f}/hr  action={cp['recommended_action']}"
         print(f"  {tier_badge} {a['device_id']} ({a['model']}): "
-              f"tier={a['tier']}  risk={a['risk_score']:.3f}  "
-              f"commands={[c['type'] for c in a['commands']]}")
+              f"tier={a['tier']}  risk={a['risk_score']:.3f}"
+              f"{cost_info}  commands={[c['type'] for c in a['commands']]}")
 
     # ── Write outputs ────────────────────────────────────────────────────
     output = {
-        "controller_version": CONTROLLER_VERSION,
+        "controller_version": controller_version,
         "scoring_window": {
             "start": scores["window_start"],
             "end": scores["window_end"],

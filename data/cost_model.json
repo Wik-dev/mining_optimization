@@ -1,0 +1,43 @@
+{
+  "version": "1.0",
+  "currency": "USD",
+  "energy": {
+    "base_rate_kwh": 0.035,
+    "peak_rate_kwh": 0.065,
+    "peak_hours": [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+  },
+  "revenue": {
+    "btc_price_usd": 85000,
+    "network_difficulty": 119.12e12,
+    "pool_fee_pct": 1.5,
+    "block_reward_btc": 3.125
+  },
+  "maintenance": {
+    "inspection_cost_usd": 150,
+    "minor_repair_usd": 500,
+    "major_repair_usd": 2000,
+    "technician_hourly_usd": 75,
+    "avg_inspection_hours": 1.0,
+    "avg_minor_repair_hours": 4.0,
+    "avg_major_repair_hours": 8.0,
+    "maintenance_restores_te_to": 0.95
+  },
+  "downtime": {
+    "opportunity_cost_multiplier": 1.2
+  },
+  "failure": {
+    "catastrophic_repair_usd": 5000,
+    "catastrophic_downtime_hours": 48,
+    "cascading_damage_multiplier": 1.5
+  },
+  "fleet_constraints": {
+    "max_simultaneous_offline_pct": 20,
+    "min_operational_hashrate_pct": 70
+  },
+  "horizons_hours": [24, 168, 720],
+  "underclock_levels": {
+    "underclock_90pct": 0.90,
+    "underclock_80pct": 0.80,
+    "underclock_70pct": 0.70
+  }
+}

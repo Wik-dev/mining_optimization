@@ -1,0 +1,46 @@
+{
+  "name": "summer_heatwave",
+  "description": "Cooling stress under Texas summer heat — 12 mixed-gen devices, 90 days, temperate site. Tests dust fouling and thermal paste degradation under sustained high ambient temperatures.",
+  "seed": 137,
+  "duration_days": 90,
+  "interval_minutes": 5,
+  "fleet": [
+    {"model": "S21XP", "count": 2},
+    {"model": "S21Pro", "count": 2},
+    {"model": "M66S", "count": 3},
+    {"model": "S19XP", "count": 3},
+    {"model": "S19jPro", "count": 2}
+  ],
+  "site": {
+    "archetype": "temperate",
+    "latitude": 31.0,
+    "energy_cost_base_kwh": 0.040,
+    "energy_cost_peak_kwh": 0.070
+  },
+  "economic": {
+    "btc_price_usd": 66650,
+    "network_difficulty_t": 133.79,
+    "block_reward_btc": 3.125,
+    "pool_fee_pct": 1.5
+  },
+  "anomalies": [
+    {
+      "type": "dust_fouling",
+      "device_indices": [4, 5, 8, 9],
+      "start_day": 5,
+      "ramp_days": 60,
+      "severity": 0.7
+    },
+    {
+      "type": "thermal_paste_deg",
+      "device_indices": [10, 11],
+      "start_day": 20,
+      "ramp_days": 50,
+      "severity": 0.6
+    }
+  ],
+  "events": [
+    {"type": "cleaning", "day": 30, "device_indices": "all"},
+    {"type": "cleaning", "day": 60, "device_indices": "all"}
+  ]
+}
