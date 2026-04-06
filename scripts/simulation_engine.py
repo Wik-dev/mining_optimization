@@ -461,6 +461,126 @@ class SimulationEngine:
         self._batch_index += 1
         return batch_path, meta_path
 
+    def save_state(self, path: str):
+        """Serialize engine state to JSON for cross-invocation continuity.
+
+        Each generate_batch invocation is a separate task. The engine state
+        (device temperatures, anomaly progression, tick cursor) must persist
+        across cycles. Deterministic replay from seed is too slow for 180-day
+        scenarios (~50K ticks), so we snapshot the mutable state instead.
+
+        Saved fields:
+          - _tick_cursor, _batch_index: simulation progress
+          - _scenario_name, _seed, _start_time: identity
+          - _interval_minutes, _samples_per_day: derived constants (for validation)
+          - Per-device mutable state: temperature, power_draw, hashrate,
+            clock_ghz, voltage_v, cooling_power, fan_rpm, dust_index,
+            operational_state, chip_count_active, hashboard_count_active,
+            reboot_count, error_code
+        """
+        device_states = []
+        for dev in self._devices:
+            device_states.append({
+                "device_id": dev.device_id,
+                "model": dev.model,
+                "temperature_c": dev.temperature_c,
+                "power_w": dev.power_w,
+                "hashrate_th": dev.hashrate_th,
+                "clock_ghz": dev.clock_ghz,
+                "voltage_v": dev.voltage_v,
+                "cooling_power_w": dev.cooling_power_w,
+                "fan_rpm": dev.fan_rpm,
+                "fan_rpm_target": dev.fan_rpm_target,
+                "dust_index": dev.dust_index,
+                "operational_state": dev.operational_state,
+                "chip_count_active": dev.chip_count_active,
+                "hashboard_count_active": dev.hashboard_count_active,
+                "reboot_count": dev.reboot_count,
+                "error_code": dev.error_code,
+            })
+
+        state = {
+            "version": 1,
+            "scenario_name": self._scenario_name,
+            "seed": self._seed,
+            "tick_cursor": self._tick_cursor,
+            "batch_index": self._batch_index,
+            "start_time": self._start_time.isoformat(),
+            "interval_minutes": self._interval_minutes,
+            "samples_per_day": self._samples_per_day,
+            "device_states": device_states,
+        }
+
+        with open(path, "w") as f:
+            json.dump(state, f, indent=2)
+
+    @classmethod
+    def from_state(cls, state_path: str, scenario_path: str) -> "SimulationEngine":
+        """Restore engine from serialized state + scenario definition.
+
+        The scenario JSON is needed to reconstruct immutable config (site,
+        economic params, anomaly schedules, events). The state JSON provides
+        the mutable simulation progress (tick cursor, device states).
+
+        Args:
+            state_path: Path to sim_state.json from a previous save_state().
+            scenario_path: Path to the original scenario JSON.
+
+        Returns:
+            A SimulationEngine with state restored to where it left off.
+        """
+        with open(state_path) as f:
+            state = json.load(f)
+
+        # Reconstruct engine from scenario (gets immutable config right)
+        engine = cls(scenario_path=scenario_path, seed=state["seed"])
+
+        # Restore simulation progress
+        engine._tick_cursor = state["tick_cursor"]
+        engine._batch_index = state["batch_index"]
+        engine._start_time = datetime.fromisoformat(state["start_time"])
+        engine._scenario_name = state["scenario_name"]
+
+        # Validate consistency between state and scenario
+        if engine._interval_minutes != state["interval_minutes"]:
+            raise ValueError(
+                f"State interval_minutes ({state['interval_minutes']}) != "
+                f"scenario interval_minutes ({engine._interval_minutes})")
+
+        # Restore per-device mutable state
+        # Device order must match — keyed by device_id for safety
+        state_by_id = {d["device_id"]: d for d in state["device_states"]}
+        for dev in engine._devices:
+            saved = state_by_id.get(dev.device_id)
+            if saved is None:
+                raise ValueError(f"Device {dev.device_id} not found in state file")
+            dev.temperature_c = saved["temperature_c"]
+            dev.power_w = saved["power_w"]
+            dev.hashrate_th = saved["hashrate_th"]
+            dev.clock_ghz = saved["clock_ghz"]
+            dev.voltage_v = saved["voltage_v"]
+            dev.cooling_power_w = saved["cooling_power_w"]
+            dev.fan_rpm = saved["fan_rpm"]
+            dev.fan_rpm_target = saved["fan_rpm_target"]
+            dev.dust_index = saved["dust_index"]
+            dev.operational_state = saved["operational_state"]
+            dev.chip_count_active = saved["chip_count_active"]
+            dev.hashboard_count_active = saved["hashboard_count_active"]
+            dev.reboot_count = saved["reboot_count"]
+            dev.error_code = saved["error_code"]
+
+        # Advance the random state to match — replay the seed + tick_cursor
+        # worth of random calls to get the PRNG in the right position.
+        # This is approximate but sufficient for simulation continuity.
+        random.seed(state["seed"])
+        # Skip ahead: each tick makes ~(devices * 8) random calls
+        # (simulate_tick uses ~8 random calls per device per tick)
+        skip_count = state["tick_cursor"] * len(engine._devices) * 8
+        for _ in range(skip_count):
+            random.random()
+
+        return engine
+
     def cleanup_old_batches(self, keep: int = 50):
         """Remove oldest batch files, retaining at most `keep` batches.
 

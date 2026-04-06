@@ -612,12 +612,25 @@ def build_trend_section(trend_data: dict, charts: dict) -> str:
     dir_summary = ", ".join(f"{k}: {v}" for k, v in sorted(dir_dist.items()))
 
     trajectory_img = ""
+    trajectory_caption = ""
     if charts.get("te_trajectory"):
         trajectory_img = f'<div class="chart"><img src="data:image/png;base64,{charts["te_trajectory"]}" /></div>'
+        trajectory_caption = (
+            '<p class="caption">TE_score over the last 7 days of each device\'s history, '
+            'colored by CUSUM regime classification. Dashed extensions = 12h linear projections. '
+            'Threshold lines at 0.8 (DEGRADED) and 0.6 (severe).</p>'
+        )
 
     heatmap_img = ""
+    heatmap_caption = ""
     if charts.get("trend_heatmap"):
         heatmap_img = f'<div class="chart"><img src="data:image/png;base64,{charts["trend_heatmap"]}" /></div>'
+        heatmap_caption = (
+            '<p class="caption">TE_score slope (change per hour) across four analysis windows. '
+            'Green = improving, red = declining, near-zero = stable. Divergence between short '
+            'and long windows (e.g. stable at 1h but declining at 7d) indicates a recent '
+            'trend reversal.</p>'
+        )
 
     return f"""
     <h2>Trend Analysis</h2>
@@ -627,9 +640,11 @@ def build_trend_section(trend_data: dict, charts: dict) -> str:
 
     <h3>TE_score Trajectory with Projections</h3>
     {trajectory_img}
+    {trajectory_caption}
 
     <h3>Trend Slope Heatmap</h3>
     {heatmap_img}
+    {heatmap_caption}
 
     <h3>Projected Threshold Crossings</h3>
     <table>
@@ -1205,6 +1220,8 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
                  box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin: 10px 0; }}
         th, td {{ padding: 10px 15px; text-align: left; border-bottom: 1px solid #eee; }}
         th {{ background: #2196F3; color: white; }}
+        .caption {{ font-size: 12px; color: #555; margin: -8px 15px 20px 15px;
+                    line-height: 1.5; padding: 0 5px; }}
         .footer {{ margin-top: 40px; padding: 15px; color: #999; font-size: 12px;
                    border-top: 1px solid #ddd; }}
     </style>
@@ -1245,10 +1262,27 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
         </div>
     </div>
 
+    <div style="background: #E8F5E9; border-left: 4px solid #43A047; padding: 12px 16px;
+                margin: 20px 0; font-size: 13px; color: #2E7D32; line-height: 1.6;">
+        <strong>Reading this report:</strong> The <em>current state</em> sections
+        (Controller Actions, Risk Ranking, Predictions) show only devices with data in the
+        <strong>last 24h scoring window</strong> &mdash; {summary['scored_device_count']} of
+        {summary['device_count']} devices from the <code>asic_aging</code> scenario.
+        The <em>historical analysis</em> sections (TE Over Time, Health Score, Anomaly Timeline)
+        show <strong>all {summary['device_count']} devices</strong> across the full simulation.
+        Scenarios have different durations: baseline (30d), cooling_failure (60d),
+        psu_degradation (90d), summer_heatwave (90d), asic_aging (180d).
+    </div>
+
     <h2>Controller Actions</h2>
     <p>Tier-based controller ({actions_data['controller_version']}).
        Safety constraints applied: {safety_html}.</p>
     <div class="chart"><img src="data:image/png;base64,{charts['controller_tiers']}" /></div>
+    <p class="caption">Tier assignment based on mean anomaly probability in the 24h scoring window.
+    CRITICAL = mean risk above threshold, immediate intervention recommended.
+    WARNING = elevated risk or TE_score below 0.8.
+    Pie chart shows distribution within the scoring window only &mdash;
+    devices from ended scenarios are not included.</p>
 
     <table>
         <tr><th>Device</th><th>Model</th><th>Tier</th><th>Risk</th><th>TE Score</th><th>Commands</th><th>MOS Methods</th><th>MOS Codes</th><th>Rationale</th></tr>
@@ -1289,12 +1323,26 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
 
     {charts.get('trend_section', '')}
 
+    <h2 style="border-top: 3px solid #2196F3; padding-top: 20px; margin-top: 40px;">
+      Historical Analysis (Full Simulation)
+    </h2>
+    <p>Charts below show all {summary['device_count']} devices across the full simulation period
+    ({summary['data_start']} &mdash; {summary['data_end']}). Scenario durations vary &mdash;
+    shorter scenarios produce shorter lines or fewer heatmap columns.</p>
+
     <h2>True Efficiency Over Time</h2>
     <div class="chart"><img src="data:image/png;base64,{charts['te_timeseries']}" /></div>
+    <p class="caption">Hourly-averaged True Efficiency (J/TH) across the full simulation for all
+    devices. Lower is better. Lines of different lengths reflect scenario durations (30d&ndash;180d).
+    Upward trends indicate efficiency degradation.</p>
 
     <h2>TE Decomposition by Device</h2>
     <p>Breakdown into hardware baseline (TE_base), voltage penalty, and cooling overhead.</p>
     <div class="chart"><img src="data:image/png;base64,{charts['te_decomposition']}" /></div>
+    <p class="caption">Average efficiency decomposition per device. Blue = baseline hardware
+    efficiency (TE_base, naive J/TH). Orange = voltage penalty from operating above optimal V/f.
+    Red = cooling overhead normalized to 25&deg;C reference. Taller total bars = worse overall
+    efficiency.</p>
 
     <p style="font-size: 12px; color: #666; margin-top: 5px; font-style: italic;">
         <strong>Unit note:</strong> This report uses J/TH (joules per terahash). The MOS platform convention is
@@ -1305,9 +1353,17 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
     <h2>Device Health Score</h2>
     <p>TE_score over time. Green = nominal (1.0), red = degraded (&lt;0.8).</p>
     <div class="chart"><img src="data:image/png;base64,{charts['health_scores']}" /></div>
+    <p class="caption">Daily-averaged TE_score per device. Green (1.0) = nominal health,
+    yellow = moderate degradation, red (&lt;0.8) = significant degradation.
+    White/missing = idle periods or scenario ended. Devices with fewer columns had
+    shorter simulation durations.</p>
 
     <h2>Failure Risk Ranking</h2>
     <div class="chart"><img src="data:image/png;base64,{charts['risk_ranking']}" /></div>
+    <p class="caption">Mean anomaly probability per device in the last 24h scoring window.
+    Red = flagged above threshold, green = below. Only devices active in the scoring window
+    appear here ({summary['scored_device_count']} of {summary['device_count']}).
+    Dashed line = classification threshold (0.3, recall-biased).</p>
 
     <table>
         <tr><th>Device</th><th>Model</th><th>Mean Risk</th><th>Max Risk</th><th>% Flagged</th><th>Status</th></tr>
@@ -1319,9 +1375,16 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
     <h2>Anomaly Timeline (Ground Truth)</h2>
     <p>Injected anomaly patterns showing onset and ramp-up. Used as training labels.</p>
     <div class="chart"><img src="data:image/png;base64,{charts['anomaly_timeline']}" /></div>
+    <p class="caption">Ground-truth anomaly labels injected by the physics simulator across the
+    full simulation. Each panel shows one anomaly type; filled regions mark active anomaly
+    periods per device. Labels visible here were used for training &mdash; the model does not
+    see them during scoring.</p>
 
     {"" if not charts.get('feature_importance') else f'''<h2>Top Predictive Features</h2>
-    <div class="chart"><img src="data:image/png;base64,{charts['feature_importance']}" /></div>'''}
+    <div class="chart"><img src="data:image/png;base64,{charts["feature_importance"]}" /></div>
+    <p class="caption">XGBoost feature importance (gain) from the classifier. Higher bars = more
+    influential features in split decisions. Reflects learned signal strength, not causation.
+    The model uses 50 features total; only the top 15 are shown.</p>'''}
 
     {"" if not per_anomaly_html else f'''<h2>Per-Anomaly-Type Training Coverage</h2>
     <table>
@@ -1395,9 +1458,11 @@ def main():
 
     # ── Summary ──────────────────────────────────────────────────────────
     active = df[df["true_efficiency"].notna()]
+    scored_device_count = len(risk_scores.get("device_risks", []))
     summary = {
         "mean_te": float(active["true_efficiency"].mean()),
         "device_count": df["device_id"].nunique(),
+        "scored_device_count": scored_device_count,
         "worst_device": active.groupby("device_id")["te_score"].mean().idxmin(),
         "data_start": df["timestamp"].min().strftime("%Y-%m-%d"),
         "data_end": df["timestamp"].max().strftime("%Y-%m-%d"),
@@ -1438,6 +1503,13 @@ def main():
             pred_html_parts.append(
                 f'<div class="chart"><img src="data:image/png;base64,{fan_chart}" /></div>'
             )
+            pred_html_parts.append(
+                '<p class="caption">Predicted TE_score trajectory for the 3 highest-risk '
+                'devices. Solid line = median forecast (p50). Shaded band = 80% prediction '
+                'interval (p10&ndash;p90). Horizontal lines mark DEGRADED (0.8) and CRITICAL '
+                '(0.6) thresholds. When the shaded band crosses a threshold, the model '
+                'expects degradation with high confidence.</p>'
+            )
 
         # Predictions table for top devices
         pred_table = _build_predictions_table(risk_scores)
@@ -1458,6 +1530,12 @@ def main():
             pred_html_parts.append('<h3>Model Performance Comparison</h3>')
             pred_html_parts.append(
                 f'<div class="chart"><img src="data:image/png;base64,{comparison_chart}" /></div>'
+            )
+            pred_html_parts.append(
+                '<p class="caption">Training samples available per prediction horizon. '
+                'Longer horizons lose samples from the end of each device\'s series '
+                '(no future data to predict against). The 7d horizon uses ~8% fewer '
+                'samples than 1h.</p>'
             )
 
         # Model version info

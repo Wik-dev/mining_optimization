@@ -1,7 +1,7 @@
 """
 MDK Fleet Workflows — Composable Single-Concern Pipelines
 ===========================================================
-Five composable workflows chained via ``continue_from`` (Pattern 1 from
+Seven composable workflows chained via ``continue_from`` (Pattern 1 from
 orchestration-patterns.md).
 
 Architecture:
@@ -19,15 +19,21 @@ Registered workflows:
   - mdk.analyze          — 3-task analysis (trends → optimize → report,
                            continue_from score)
   - mdk.generate_corpus  — 1-task synthetic data generation
+  - mdk.generate_batch   — 1-task simulation batch generation (stateful)
+  - mdk.fleet_simulation — 1-task Pattern 5a wrapper (triggers growing-window
+                           inference loop from inside container, UI-triggerable)
 
 Orchestration scripts chain these:
-  Training:  generate_corpus → pre_processing → train
-  Inference: pre_processing → score → analyze
+  Training:   generate_corpus → pre_processing → train
+  Inference:  pre_processing → score → analyze
+  Simulation: mdk.fleet_simulation triggers:
+              generate_batch(full) → [pre_processing(cutoff) → score → analyze] × N cycles
 
 Author: Wiktor (MDK assignment, April 2026)
 """
 
 from validance.sdk import Task, Workflow
+from workflows.fleet_simulation import create_workflow as create_fleet_simulation_workflow
 
 TASK_IMAGE = "autoregistry.azurecr.io/mdk-fleet-intelligence:latest"
 
@@ -153,8 +159,10 @@ def create_train_workflow() -> Workflow:
 def create_score_workflow() -> Workflow:
     """1-task fleet scoring. Chain with continue_from pre_processing.
 
-    For training path: model artifact comes from continue_from train workflow.
-    For inference path: model artifact comes from ${model_path} parameter.
+    Model artifacts resolve via deep context: the training workflow hash must
+    be in the continuation chain (e.g., generate_batch → pre_processing → score
+    all chained from training via continue_from). This preserves provenance —
+    the exact training run is always traceable.
 
     Outputs: fleet_risk_scores.json.
     """
@@ -166,10 +174,14 @@ def create_score_workflow() -> Workflow:
         docker_image=TASK_IMAGE,
         inputs={
             "kpi_timeseries.parquet": "@compute_true_efficiency:kpi_series",
-            "anomaly_model.joblib": "${model_path}",
+            # Model artifacts from training workflow — resolved via deep context.
+            # The training hash must be in the continuation chain (recursive walk).
+            "anomaly_model.joblib": "@train_anomaly_model:model_artifact",
             "fleet_metadata.json": "@ingest_telemetry:metadata",
-            "regression_model.joblib": "${regression_model_path}",
-            "model_registry.json": "${model_registry_path}",
+            # regression_model and model_registry are optional — score.py
+            # handles their absence gracefully (classifier-only fallback).
+            # They are NOT declared as inputs because training may not produce
+            # regression models (depends on dataset characteristics).
         },
         output_files={
             "risk_scores": "fleet_risk_scores.json",
@@ -248,7 +260,8 @@ def create_analyze_workflow() -> Workflow:
             "fleet_actions.json": "@optimize_fleet:fleet_actions",
             "fleet_metadata.json": "@ingest_telemetry:metadata",
             "trend_analysis.json": "@analyze_trends:trend_analysis",
-            "model_metrics.json": "${model_metrics_path}",
+            # Model metrics from training — resolved via deep context chain.
+            "model_metrics.json": "@train_anomaly_model:model_metrics",
         },
         output_files={
             "dashboard": "report.html",
@@ -296,6 +309,52 @@ def create_corpus_workflow() -> Workflow:
     return wf
 
 
+# ── Batch generation workflow ────────────────────────────────────────────────
+
+def create_generate_batch_workflow() -> Workflow:
+    """1-task batch generation. Used by orchestrate_simulation.py (Pattern 1).
+
+    Generates a single interval of simulated telemetry via SimulationEngine.
+    State continuity across cycles: the orchestrator passes sim_state_path
+    (a host-side URI from get_file_url()) so the engine resumes where it
+    left off. First cycle omits sim_state_path for a fresh start.
+
+    Outputs: batch_telemetry.csv, batch_metadata.json, sim_state.json.
+    """
+    wf = Workflow("mdk.generate_batch")
+
+    # Single task: generate one batch of telemetry.
+    # interval_minutes is passed as a trigger parameter → CTX_INTERVAL_MINUTES
+    # (ADR-005 §2.3.1). The task reads it from the environment.
+    batch = Task(
+        name="generate_batch",
+        command="python /app/tasks/generate_batch.py",
+        docker_image=TASK_IMAGE,
+        inputs={
+            # scenario.json is always required
+            "scenario.json": "${scenario_path}",
+            # sim_state.json is optional — absent on first cycle.
+            # The orchestrator passes sim_state_path only for cycles 1+.
+            # When the parameter is empty/missing, the engine starts fresh.
+            "sim_state.json": "${sim_state_path}",
+        },
+        output_files={
+            "telemetry": "batch_telemetry.csv",
+            "metadata": "batch_metadata.json",
+            "state": "sim_state.json",
+        },
+        output_vars={
+            "sim_timestamp": "str",
+            "tick_cursor": "int",
+            "batch_index": "int",
+        },
+        timeout=300,
+    )
+
+    wf.add_task(batch)
+    return wf
+
+
 # ── WORKFLOWS dict for register_workflow() discovery ─────────────────────────
 
 WORKFLOWS = {
@@ -304,6 +363,8 @@ WORKFLOWS = {
     "score": create_score_workflow,
     "analyze": create_analyze_workflow,
     "generate_corpus": create_corpus_workflow,
+    "generate_batch": create_generate_batch_workflow,
+    "fleet_simulation": create_fleet_simulation_workflow,
 }
 
 

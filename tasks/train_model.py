@@ -64,6 +64,19 @@ FEATURE_COLS = [
     # wear, PSU capacitor aging, solder fatigue, and dust fouling.
     "fan_rpm", "voltage_ripple_mv", "reboot_count",
     "chip_count_active", "hashboard_count_active", "dust_index",
+    # 7-day rolling windows (5 features) — multi-day baseline for gradual
+    # degradation invisible in 24h windows.
+    # Research: notes_mining_data.md line 42: "A 3°C rise over a week at
+    # constant ambient is a stronger signal than absolute temperature."
+    "temperature_c_mean_7d", "temperature_c_dev_7d",
+    "power_w_mean_7d", "hashrate_th_mean_7d", "efficiency_jth_mean_7d",
+    # Voltage ripple variance — PSU capacitor degradation manifests as
+    # increasing variance before the mean shifts.
+    # Research: notes_mining_data.md line 44.
+    "voltage_ripple_std_24h",
+    # Chip dropout ratio — active/nominal, normalized across models.
+    # Research: notes_mining_data.md line 13.
+    "chip_dropout_ratio",
 ]
 # Available but not yet included: hashrate_th_mean_30m, hashrate_th_std_30m
 # (30-min rolling hashrate, approximating MOS hashrate_30m resolution).
@@ -114,6 +127,8 @@ TEMPORAL_FEATURES = [
     "te_score_slope_1h",         # linear trend over last 1h window
     "te_score_slope_6h",         # linear trend over last 6h window
     "te_score_volatility_24h",   # rolling std over last 24h window
+    "te_score_slope_24h",        # linear trend over last 24h window
+    "te_score_slope_7d",         # linear trend over last 7d window
 ]
 
 
@@ -200,6 +215,16 @@ def add_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
 
         # Rolling linear slope over 6h (72 samples): captures medium-term trend.
         g["te_score_slope_6h"] = _rolling_slope(te, window=72)
+
+        # 24h slope: captures daily-scale TE trend direction.
+        g["te_score_slope_24h"] = _rolling_slope(te, window=288)
+
+        # 7d slope: captures weekly-scale TE trend. Closes the temporal
+        # feature / prediction horizon mismatch — the 7d regression target
+        # now has a matching-scale slope input.
+        # Research: notes_mining_data.md line 44: "efficiency degrades
+        # before hashrate drops."
+        g["te_score_slope_7d"] = _rolling_slope(te, window=2016)
 
         # Rolling volatility over 24h: high volatility indicates unstable device
         # behavior (PSU instability, thermal cycling). 288 samples = 24h at 5-min.

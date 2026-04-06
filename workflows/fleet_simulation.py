@@ -1,23 +1,31 @@
 """
-MDK Fleet Simulation Workflow
-==============================
-Orchestration workflow (Pattern 5a) that runs a continuous simulation loop
-as an engine-managed persistent task.
+MDK Fleet Simulation Workflow — Pattern 5a Wrapper
+====================================================
+1-task ephemeral workflow that runs the growing-window simulation orchestrator
+inside a container. The orchestrator triggers inner workflows (generate_batch,
+pre_processing, score, analyze) via HTTP back to the engine.
 
-The simulation_loop.py orchestrator inside the container:
-  1. Generates telemetry batches via SimulationEngine
-  2. Chains mdk.pre_processing → mdk.train (training, cycle 0)
-  3. Chains mdk.pre_processing → mdk.score → mdk.analyze (cycles 1..N)
-  4. Links runs via session_hash + continue_from
+This makes the simulation triggerable from the dashboard UI via
+POST /api/workflows/mdk.fleet_simulation/trigger, instead of requiring
+CLI access to run orchestrate_simulation.py directly.
 
-Parameters (trigger-time, exposed as CTX_* env vars):
-  - scenario_path: URI to scenario JSON (file:// or azure://)
-  - cycles: number of inference cycles after training
-  - api_url: workflow engine API URL (for inner triggers)
+Architecture:
+  mdk.fleet_simulation (this, Pattern 5a outer shell)
+    └→ orchestrate_simulation.py (inside container, Pattern 1 loop)
+         └→ Phase 1: mdk.generate_batch (full scenario data, one-shot)
+         └→ Phase 2: [mdk.pre_processing(cutoff) → mdk.score → mdk.analyze] × N cycles
 
-Outputs:
-  - simulation_metrics.json: accumulated cycle results
-  - _validance_vars.json: cycles_completed, cycles_failed, session_hash
+  Each inference cycle uses a growing-window cutoff: the pre_processing step
+  filters the full dataset to [t=0 → t=cutoff], so rolling feature windows
+  (6h, 24h, 7d) are properly populated — matching real-world monitoring
+  where a database accumulates telemetry over time.
+
+Trigger parameters (→ CTX_* env vars via ADR-005 §2.3):
+  scenario_path    → CTX_SCENARIO_PATH  (resolved as input URI → ./scenario.json)
+  training_hash    → CTX_TRAINING_HASH  (workflow hash of the training run — model
+                     artifacts resolved via deep context chain, not explicit paths)
+  api_url          → CTX_API_URL        (engine REST API for inner triggers)
+  interval_days    → CTX_INTERVAL_DAYS  (simulated days per cycle, default: 1)
 
 Author: Wiktor (MDK assignment, April 2026)
 """
@@ -31,22 +39,23 @@ def create_workflow() -> Workflow:
     """Entry point for workflow discovery."""
     wf = Workflow("mdk.fleet_simulation")
 
-    # Single persistent task: the simulation loop orchestrator.
-    # Runs simulation_loop.py inside the container, which generates telemetry
-    # batches and triggers inner workflow runs via the engine's REST API.
+    # Single ephemeral task: runs orchestrate_simulation.py which in turn
+    # triggers inner workflows via HTTP back to the engine.
     #
-    # Trigger parameters become CTX_* env vars (ADR-005 §2.3):
-    #   api_url     → CTX_API_URL       (read by simulation_loop.py)
-    #   cycles      → CTX_CYCLES        (shell-expanded in command)
-    #   cost_model_path → CTX_COST_MODEL_PATH (read by simulation_loop.py)
-    #   scenario_path → resolved as input URI
+    # Ephemeral, not persistent — simulation has a clear end (all scenario days).
+    # Pattern 5a: this task orchestrates, inner workflows do the data work.
+    #
+    # Timeout: 4h — long scenarios (180 days × inference per day) can take
+    # significant wall-clock time. Each inner cycle is ~2 min, so 180 cycles
+    # ≈ 6h worst case. 4h covers most scenarios with some margin.
     orchestrator = Task(
         name="simulation_orchestrator",
         command=(
-            "python /app/scripts/simulation_loop.py"
-            " --scenario /work/scenario.json"
-            ' --cycles "$CTX_CYCLES"'
-            " --output-dir /work"
+            "python /app/scripts/orchestrate_simulation.py"
+            " --scenario ./scenario.json"
+            ' --training-hash "$CTX_TRAINING_HASH"'
+            ' --api-url "$CTX_API_URL"'
+            ' --interval-days "$CTX_INTERVAL_DAYS"'
         ),
         docker_image=TASK_IMAGE,
         inputs={
@@ -58,10 +67,10 @@ def create_workflow() -> Workflow:
         output_vars={
             "cycles_completed": "int",
             "cycles_failed": "int",
+            "total_cycles": "int",
             "session_hash": "str",
         },
-        persistent=True,
-        timeout=7200,  # 2 hours max — long enough for 12+ cycles
+        timeout=14400,  # 4h
     )
 
     wf.add_task(orchestrator)

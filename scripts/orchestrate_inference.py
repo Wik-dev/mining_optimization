@@ -18,7 +18,7 @@ Usage:
         --api-url http://localhost:8001 \\
         --telemetry-csv /work/fleet_telemetry.csv \\
         --metadata-json /work/fleet_metadata.json \\
-        --model-path /work/anomaly_model.joblib
+        --training-hash 636e10ec2ad88f42
 
 Timing / loop considerations:
     - Feature engineering over growing history is O(n); scoring window is
@@ -97,14 +97,9 @@ def main():
                         help="Path/URI to telemetry CSV")
     parser.add_argument("--metadata-json", required=True,
                         help="Path/URI to fleet metadata JSON")
-    parser.add_argument("--model-path", required=True,
-                        help="Path/URI to pre-trained anomaly_model.joblib")
-    parser.add_argument("--regression-model-path", default="",
-                        help="Path/URI to regression model (optional)")
-    parser.add_argument("--model-registry-path", default="",
-                        help="Path/URI to model_registry.json (optional)")
-    parser.add_argument("--model-metrics-path", default="",
-                        help="Path/URI to model_metrics.json (optional, for report)")
+    parser.add_argument("--training-hash", required=True,
+                        help="Workflow hash of the training run. Model artifacts "
+                             "resolved via deep context (continue_from chain).")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -120,7 +115,11 @@ def main():
     logger.info("Inference orchestration — session=%s", session_hash)
 
     # ── Step 1: Pre-processing ─────────────────────────────────────────────
-    logger.info("Step 1/3: Pre-processing (mdk.pre_processing)")
+    # Chain from training_hash: puts training outputs (model artifacts) in the
+    # deep context chain. Downstream score/analyze resolve @train_anomaly_model:*
+    # references automatically via recursive continuation.
+    logger.info("Step 1/3: Pre-processing (mdk.pre_processing, chained from training %s)",
+                args.training_hash)
     wf_hash = trigger_workflow(
         session, args.api_url, "mdk.pre_processing",
         parameters={
@@ -128,6 +127,7 @@ def main():
             "metadata_json_path": args.metadata_json,
         },
         session_hash=session_hash,
+        continue_from=args.training_hash,
     )
     logger.info("  Triggered: %s", wf_hash)
     poll_completion(session, args.api_url, "mdk.pre_processing", wf_hash)
@@ -135,18 +135,11 @@ def main():
     prev_hash = wf_hash
 
     # ── Step 2: Score ──────────────────────────────────────────────────────
+    # No model_path parameter — score resolves @train_anomaly_model:* from deep context.
     logger.info("Step 2/3: Scoring (mdk.score)")
-    score_params = {
-        "model_path": args.model_path,
-    }
-    if args.regression_model_path:
-        score_params["regression_model_path"] = args.regression_model_path
-    if args.model_registry_path:
-        score_params["model_registry_path"] = args.model_registry_path
-
     wf_hash = trigger_workflow(
         session, args.api_url, "mdk.score",
-        parameters=score_params,
+        parameters={},
         session_hash=session_hash,
         continue_from=prev_hash,
     )
@@ -156,14 +149,11 @@ def main():
     prev_hash = wf_hash
 
     # ── Step 3: Analyze ────────────────────────────────────────────────────
+    # Model metrics also resolved via deep context (@train_anomaly_model:model_metrics).
     logger.info("Step 3/3: Analysis (mdk.analyze)")
-    analyze_params = {}
-    if args.model_metrics_path:
-        analyze_params["model_metrics_path"] = args.model_metrics_path
-
     wf_hash = trigger_workflow(
         session, args.api_url, "mdk.analyze",
-        parameters=analyze_params,
+        parameters={},
         session_hash=session_hash,
         continue_from=prev_hash,
     )

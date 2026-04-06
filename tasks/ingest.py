@@ -10,6 +10,8 @@ Vars:    row_count, device_count, time_span_days
 """
 
 import json
+import os
+
 import pandas as pd
 
 EXPECTED_COLUMNS = {
@@ -52,6 +54,21 @@ def main():
 
     # ── Parse types ──────────────────────────────────────────────────────
     df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+    # Growing-window simulation support: when CTX_CUTOFF_TIMESTAMP is set,
+    # filter data to [start, cutoff]. This allows each inference cycle to
+    # see all accumulated history from t=0 to the current simulated time,
+    # matching real-world monitoring where a DB accumulates telemetry.
+    # Without this, each cycle only sees its own batch — rolling feature
+    # windows (6h, 24h, 7d) are truncated, causing feature distribution
+    # mismatch vs training data.
+    cutoff = os.environ.get("CTX_CUTOFF_TIMESTAMP")
+    if cutoff:
+        cutoff_ts = pd.to_datetime(cutoff)
+        before = len(df)
+        df = df[df["timestamp"] <= cutoff_ts]
+        print(f"Cutoff filter: {cutoff} → kept {len(df)}/{before} rows")
+
     for col in NUMERIC_COLUMNS:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 

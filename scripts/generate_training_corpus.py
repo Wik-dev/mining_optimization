@@ -130,6 +130,8 @@ def generate_scenario_data(scenario_path: str, seed: int = None,
                 "nominal_hashrate_th": dev.nominal_hashrate_th,
                 "nominal_power_w": dev.nominal_power_w,
                 "nominal_efficiency_jth": dev.efficiency_jth,
+                "nominal_chip_count": dev.nominal_chip_count,
+                "nominal_hashboard_count": dev.nominal_hashboard_count,
             }
             for dev in devices
         ],

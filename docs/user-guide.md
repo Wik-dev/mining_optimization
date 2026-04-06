@@ -4,12 +4,13 @@
 
 Wiktor Lisowski | April 2026
 
-Last edited: 2026-04-05
+Last edited: 2026-04-06
 
 ### Change Log
 
 | Date | Change |
 |------|--------|
+| 2026-04-06 | Update for `continue_from` deep context model resolution (training-hash replaces model-path) |
 | 2026-04-05 | Initial version |
 
 ---
@@ -30,11 +31,12 @@ python scripts/register_validance_workflows.py --api-url http://localhost:8001
 python scripts/orchestrate_training.py --api-url http://localhost:8001
 
 # 3. Run inference: preprocess → score → analyze → report (~7 min)
+#    Use the training hash from step 2 output (model resolved via deep context)
 python scripts/orchestrate_inference.py \
   --api-url http://localhost:8001 \
   --telemetry-csv /work/training_telemetry.csv \
   --metadata-json /work/training_metadata.json \
-  --model-path /work/anomaly_model.joblib
+  --training-hash <hash-from-step-2>
 
 # 4. Open the dashboard
 open /work/report.html
@@ -179,20 +181,10 @@ python scripts/orchestrate_inference.py \
   --api-url http://localhost:8001 \
   --telemetry-csv /work/fleet_telemetry.csv \
   --metadata-json /work/fleet_metadata.json \
-  --model-path /work/anomaly_model.joblib
+  --training-hash 483379d07426668e
 ```
 
-For full output (with predictions and model metrics in the report):
-
-```bash
-python scripts/orchestrate_inference.py \
-  --api-url http://localhost:8001 \
-  --telemetry-csv /work/fleet_telemetry.csv \
-  --metadata-json /work/fleet_metadata.json \
-  --model-path /work/anomaly_model.joblib \
-  --regression-model-path /work/regression_model_v1.joblib \
-  --model-metrics-path /work/model_metrics.json
-```
+Model artifacts (anomaly_model.joblib, regression_model, model_metrics) are resolved automatically via Validance's `continue_from` deep context chain — no explicit file paths needed. The training hash is printed at the end of the training chain (§2.1).
 
 This chains three workflows:
 1. **pre_processing** — ingest, features, KPI (~3-4 min)
@@ -234,16 +226,74 @@ These read existing pipeline outputs and return JSON. No side effects, no contai
 
 ### 3.4 Continuous Simulation
 
-For automated training + inference cycles (demo or testing):
+For automated inference cycles against evolving simulated telemetry (demo or testing). Requires a pre-trained model — run the training chain first (§2).
+
+**Growing-window approach**: All scenario data is generated upfront (Phase 1), then each inference cycle processes the accumulated history from `t=0` to `t=cutoff` (Phase 2). This ensures rolling feature windows (6h, 24h, 7d) are properly populated, matching real-world monitoring where a database accumulates telemetry over time.
+
+**From the dashboard** (recommended for demos):
+
+Click "Start Simulation" in the dashboard sidebar, select a scenario, and the dashboard triggers `mdk.fleet_simulation` via the API. Inner cycles appear as separate workflow runs.
+
+**From the CLI**:
+
+```bash
+python scripts/orchestrate_simulation.py \
+  --scenario data/scenarios/asic_aging.json \
+  --training-hash 483379d07426668e \
+  --api-url http://localhost:8001
+```
+
+Model artifacts are resolved via `continue_from` deep context — the training hash establishes provenance. The number of cycles is derived from the scenario's `duration_days` divided by `--interval-days` (default: 1). For example, `asic_aging.json` (180 days) at 1-day intervals = 180 cycles.
+
+```bash
+# 7-day intervals → fewer cycles (26 instead of 180), faster demo
+python scripts/orchestrate_simulation.py \
+  --scenario data/scenarios/asic_aging.json \
+  --training-hash 483379d07426668e \
+  --interval-days 7
+```
+
+**Scenario durations**:
+
+| Scenario | Days | Devices | Cycles (1-day) | Cycles (7-day) |
+|----------|------|---------|----------------|----------------|
+| asic_aging | 180 | 15 | 180 | 26 |
+| cooling_failure | 60 | 10 | 60 | 9 |
+| psu_degradation | 90 | 10 | 90 | 13 |
+| summer_heatwave | 90 | 12 | 90 | 13 |
+| baseline | 30 | 10 | 30 | 5 |
+
+Results accumulate in `data/simulation/simulation_metrics.json`.
+
+Each cycle produces visible workflow runs in the Validance API — the dashboard tracks progress per-cycle and provides a day banner for temporal navigation.
+
+**Standalone batch generation** (no Validance needed):
+
+```bash
+# Generate a single 24h batch:
+python scripts/generate_batch.py \
+  --scenario data/scenarios/asic_aging.json \
+  --interval 1440 \
+  --output-dir data/pipeline_run
+
+# Continue with 1h batches (state carries over):
+python scripts/generate_batch.py \
+  --scenario data/scenarios/asic_aging.json \
+  --interval 60 \
+  --state data/pipeline_run/sim_state.json \
+  --output-dir data/pipeline_run
+```
+
+**Offline simulation** (no API, just batch generation):
 
 ```bash
 python scripts/simulation_loop.py \
   --scenario data/scenarios/baseline.json \
   --cycles 12 \
-  --api-url http://localhost:8001
+  --offline
 ```
 
-Cycle 0 generates 24h of data and runs the training chain. Cycles 1-12 each generate 1h of data and run inference. Results accumulate in `/work/simulation_metrics.json`.
+This mode still works for standalone testing without Validance.
 
 ---
 
@@ -450,12 +500,13 @@ All actions are logged to `agent_actions.json` for post-incident review.
 | `mdk.score` | 1 | Score fleet with pre-trained model | After pre_processing (inference path) |
 | `mdk.analyze` | 3 | trends → optimize → report | After score |
 | `mdk.generate_corpus` | 1 | Generate synthetic training data | Before pre_processing (training path) |
-| `mdk.fleet_simulation` | 1 | Persistent simulation orchestrator | Continuous demo/testing |
+| `mdk.generate_batch` | 1 | Generate simulation batch (stateful) | Used by simulation orchestrator |
+| `mdk.fleet_simulation` | 1 | Pattern 5a growing-window simulation wrapper | Dashboard trigger or CLI |
 
 Orchestration chains:
 - **Training**: `generate_corpus → pre_processing → train`
 - **Inference**: `pre_processing → score → analyze`
-- **Simulation**: persistent loop alternating training (cycle 0) and inference (cycles 1..N)
+- **Simulation**: `mdk.fleet_simulation` triggers: `generate_batch(full) → [pre_processing(cutoff) → score → analyze] × N cycles`
 
 ### 6.2 Pipeline Tasks
 
@@ -513,6 +564,9 @@ Applied before tier logic. Always win.
 |----------|---------|---------|
 | `PYTHONPATH` | — | Must include `validance-workflow/` for SDK imports |
 | `CTX_API_URL` | `http://localhost:8000` | Validance API URL (container context) |
+| `CTX_CUTOFF_TIMESTAMP` | — | Growing-window cutoff (ISO 8601). Set by orchestrate_simulation.py per cycle. Filters ingest data to `[start, cutoff]`. |
+| `CTX_TRAINING_HASH` | — | Training workflow hash. Used by Pattern 5a simulation wrapper. |
+| `CTX_INTERVAL_DAYS` | `1` | Simulated days per inference cycle (Pattern 5a). |
 | `WORKFLOW_API_URL` | `http://localhost:8000` | Validance API URL (fallback) |
 
 ### 6.7 MOS Alert Codes
@@ -536,8 +590,9 @@ Applied before tier logic. Always win.
 |-------|-------|-----|
 | `Cannot reach API at http://localhost:8001` | Validance dev container not running | `docker ps`, restart dev container |
 | `Workflow not found: mdk.pre_processing` | Workflows not registered | Run `register_validance_workflows.py` |
-| `No such file: anomaly_model.joblib` | Model not trained | Run the training chain first |
+| `No such file: anomaly_model.joblib` | Model not trained or training hash not in continuation chain | Run the training chain first; pass `--training-hash` to inference/simulation |
 | `Fleet hashrate would drop to 68%` | Underclock rejected by fleet capacity check | Reduce `target_pct` or bring other devices back online first |
 | `Container exited with code 2` | Missing `request_loop.py` in image | Rebuild task image with `scripts/request_loop.py` baked in |
 | Task timeout after 30 min | Container hung or resource exhaustion | Check `docker logs` for the task container |
-| `Regression model not found` | Optional; classifier-only mode | Pass `--regression-model-path` or run without predictions |
+| `Regression model not found` | Optional; classifier-only mode | Regression model auto-resolved from training if present; run without predictions otherwise |
+| `feature_names mismatch` | Inference data has fewer features than training | Normal for single-scenario simulation; score.py pads missing features with 0 |

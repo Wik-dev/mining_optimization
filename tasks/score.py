@@ -104,6 +104,8 @@ def add_temporal_features_for_scoring(group: pd.DataFrame) -> pd.DataFrame:
     g["te_score_slope_1h"] = _rolling_slope(te, window=12)
     g["te_score_slope_6h"] = _rolling_slope(te, window=72)
     g["te_score_volatility_24h"] = te.rolling(window=288, min_periods=12).std()
+    g["te_score_slope_24h"] = _rolling_slope(te, window=288)
+    g["te_score_slope_7d"] = _rolling_slope(te, window=2016)
 
     return g
 
@@ -244,8 +246,11 @@ def main():
     print(f"Scoring window: {t_cutoff} → {t_max} ({len(window_active):,} active samples)")
 
     # ── Score (classifier) ───────────────────────────────────────────────
-    available = [c for c in feature_names if c in window_active.columns]
-    X = window_active[available].fillna(0).replace([np.inf, -np.inf], 0)
+    # Align features to model's expected set: use available columns, pad missing with 0.
+    # This handles cases where training used a superset of features (e.g., multi-scenario
+    # corpus produces chip_dropout_ratio but single-scenario inference data doesn't).
+    X = window_active.reindex(columns=feature_names, fill_value=0)
+    X = X.fillna(0).replace([np.inf, -np.inf], 0)
     y_proba = model.predict_proba(X)[:, 1]
 
     window_active = window_active.copy()

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Register fleet intelligence workflows with the Validance engine via REST API.
 
-Registers 5 composable workflows + 1 simulation orchestrator:
-  - mdk.pre_processing  (3 tasks: ingest → features → kpi)
-  - mdk.train           (1 task: train anomaly model)
-  - mdk.score           (1 task: score fleet)
-  - mdk.analyze         (3 tasks: trends → optimize → report)
-  - mdk.generate_corpus (1 task: synthetic data generation)
-  - mdk.fleet_simulation (1 persistent task: simulation loop orchestrator)
+Registers 7 composable workflows:
+  - mdk.pre_processing    (3 tasks: ingest → features → kpi)
+  - mdk.train             (1 task: train anomaly model)
+  - mdk.score             (1 task: score fleet)
+  - mdk.analyze           (3 tasks: trends → optimize → report)
+  - mdk.generate_corpus   (1 task: synthetic data generation)
+  - mdk.generate_batch    (1 task: simulation batch generation)
+  - mdk.fleet_simulation  (1 task: Pattern 5a growing-window simulation wrapper)
 
 Usage:
     python scripts/register_validance_workflows.py [--api-url http://localhost:8001]
@@ -23,7 +24,6 @@ import requests
 # Add project root so we can import the workflow definitions
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from workflows.fleet_intelligence import WORKFLOWS
-from workflows.fleet_simulation import create_workflow as create_simulation_workflow
 
 
 def workflow_to_api_json(wf):
@@ -84,20 +84,18 @@ def main():
         print(f"  ERROR: Cannot reach API at {args.api_url}: {e}")
         sys.exit(1)
 
-    # Register all 5 composable workflows
+    # Register all composable workflows
     descriptions = {
         "pre_processing": "3-task shared prefix (ingest → features → kpi)",
         "train": "1-task model training (continue_from pre_processing)",
         "score": "1-task fleet scoring (continue_from pre_processing)",
         "analyze": "3-task analysis (trends → optimize → report, continue_from score)",
         "generate_corpus": "1-task synthetic data generation",
+        "generate_batch": "1-task simulation batch generation (stateful)",
+        "fleet_simulation": "1-task Pattern 5a growing-window simulation wrapper (UI-triggerable)",
     }
     for key, factory in WORKFLOWS.items():
         register(args.api_url, factory(), descriptions[key])
-
-    # Register simulation orchestrator
-    register(args.api_url, create_simulation_workflow(),
-             "Continuous simulation loop — persistent orchestrator that generates telemetry and triggers training + inference cycles")
 
     # Verify
     resp = requests.get(f"{args.api_url}/api/workflows")

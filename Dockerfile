@@ -15,5 +15,6 @@ RUN pip install --no-cache-dir \
 # Bake task and simulation scripts into the image
 COPY tasks/ /app/tasks/
 COPY scripts/ /app/scripts/
+COPY data/scenarios/ /app/data/scenarios/
 
 WORKDIR /app
