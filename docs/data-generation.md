@@ -2,7 +2,7 @@
 
 ## Overview
 
-`scripts/generate_synthetic_data.py` produces a reproducible synthetic telemetry dataset simulating a 10-device ASIC mining fleet over 30 days. Deterministic (seed=42), single-script, zero external dependencies.
+`scripts/generate_training_corpus.py` produces reproducible synthetic telemetry datasets from scenario JSON files, using the shared physics engine (`scripts/physics_engine.py`). Supports single-scenario or multi-scenario composition for rich training corpora. Fully deterministic (per-scenario seeds).
 
 ## How Data Are Generated
 
@@ -15,8 +15,8 @@ The generator steps through time at 5-minute intervals. For each timestep, it co
 | **Hashrate** | H = (H_nom / f_stock) × f × (1 - chip_degradation) — linear with clock |
 | **Temperature** | Thermal resistance model with exponential approach to equilibrium; resistance increases with fouling |
 | **Cooling** | Proportional controller: P_cool = base + k × max(0, T - setpoint), degraded by fouling |
-| **Ambient temp** | Sinusoidal (seasonal + diurnal), northern site at 64.5°N |
-| **Energy price** | Time-of-use: peak ($0.065/kWh, weekday 08-20), off-peak ($0.035/kWh), with market noise |
+| **Ambient temp** | Sinusoidal (seasonal + diurnal), configurable per site archetype |
+| **Energy price** | Time-of-use: peak/off-peak with market noise, configurable per site |
 
 ### Operating Modes
 
@@ -29,70 +29,59 @@ Rule-based mode selection per device based on energy price and ambient temperatu
 | `underclock` | price > $0.06 | ×0.80 | -20mV |
 | `idle` | price > $0.07 | 0 | — |
 
-### Anomaly Injection
+### Anomaly Types
 
-Three anomaly types are injected on specific devices with scheduled start days and gradual ramp-up:
+10 anomaly types available via scenario configuration:
 
-| Type | Devices | Mechanism | Observable effect |
+| Type | Physical mechanism |
+|---|---|
+| `thermal_deg` | Thermal resistance increase (heatsink fouling) |
+| `psu_instability` | Voltage ripple noise |
+| `hashrate_decay` | Partial ASIC chip failure |
+| `dust_fouling` | Dust accumulation on heatsinks/fans |
+| `thermal_paste_deg` | Thermal interface degradation |
+| `fan_bearing_wear` | Fan RPM decay from bearing wear |
+| `capacitor_aging` | PSU capacitor ESR increase |
+| `solder_joint_fatigue` | Thermal cycling solder degradation |
+| `coolant_loop_fouling` | Hydro cooling loop contamination |
+| `firmware_cliff` | Sudden performance cliff from firmware bug |
+
+Each anomaly has a `severity` (0–1) and `ramp_days` controlling ramp rate. Ground truth labels are included in every row.
+
+### Scenarios
+
+Scenario JSON files in `data/scenarios/` define fleet composition, site, anomaly schedules, and events:
+
+| Scenario | Devices | Duration | Focus |
 |---|---|---|---|
-| **A1 — Thermal degradation** | ASIC-007 (day 8), ASIC-004 (day 18) | Increases thermal resistance (fouling) | Creeping temperature rise, increased cooling power |
-| **A2 — PSU instability** | ASIC-003 (day 14) | Adds voltage ripple noise | Chaotic voltage-driven thermal swings |
-| **A3 — Hashrate decay** | ASIC-009 (day 5), ASIC-002 (day 22) | Reduces effective chip count | Steady hashrate drop, efficiency degradation |
-
-Each anomaly has a `severity` (0–1) and `ramp_days` controlling how quickly it reaches full severity. Ground truth labels are included in every row for supervised training.
+| `baseline.json` | 10 | 30d | Healthy fleet, no anomalies |
+| `summer_heatwave.json` | 12 | 90d | Dust fouling + thermal paste degradation |
+| `cooling_failure.json` | 10 | 60d | Coolant fouling + fan bearing wear |
+| `psu_degradation.json` | 10 | 90d | PSU instability + capacitor aging |
+| `asic_aging.json` | 15 | 180d | Hashrate decay + solder fatigue + firmware cliff |
 
 ## Outputs
 
-### `fleet_telemetry.csv` — 86,400 rows
+### `training_telemetry.csv` — 35-column telemetry
 
-| Field | Description |
-|---|---|
-| `timestamp` | ISO 8601, 5-min intervals starting 2026-04-02 |
-| `device_id` | `ASIC-000` through `ASIC-009` |
-| `model` | Hardware model (S21-HYD, M66S, S19XP, S19jPro) |
-| `clock_ghz` | Core clock frequency |
-| `voltage_v` | Core voltage |
-| `hashrate_th` | Observed hashrate (TH/s) |
-| `power_w` | Total ASIC power consumption (W) |
-| `temperature_c` | Chip junction temperature (°C) |
-| `cooling_power_w` | Cooling system power (W) |
-| `ambient_temp_c` | Site ambient temperature (°C) |
-| `energy_price_kwh` | Electricity spot price ($/kWh) |
-| `operating_mode` | `normal` / `overclock` / `underclock` / `idle` |
-| `efficiency_jth` | Instantaneous efficiency (J/TH) |
-| `label_thermal_deg` | Ground truth: thermal degradation (0/1) |
-| `label_psu_instability` | Ground truth: PSU instability (0/1) |
-| `label_hashrate_decay` | Ground truth: hashrate decay (0/1) |
-| `label_any_anomaly` | Ground truth: any anomaly active (0/1) |
+Backward-compatible superset of the original 17-column schema. Includes operational state, error codes, economic fields, and per-anomaly-type labels.
 
-### `fleet_metadata.json`
+### `training_metadata.json`
 
-Provenance file: generator version, seed, full fleet specs (model, stock clock/voltage, nominal hashrate/power/efficiency per device), anomaly schedule, field descriptions, and SHA-256 hash of the CSV.
+Provenance: generator version, seeds, fleet specs, scenario details, anomaly schedules, label statistics, and SHA-256 hash.
 
-### `anomaly_verification.png`
+### `training_labels.csv`
 
-Verification plots confirming all three anomaly types produce distinct, separable signals from healthy baselines.
-
-## Configuration Options
-
-All tuneable at the top of the script:
-
-| Parameter | Default | Effect |
-|---|---|---|
-| `SEED` | 42 | Random seed — change for different noise realizations |
-| `NUM_DEVICES` | 10 | Fleet size (must match `DEVICE_PROFILES` length) |
-| `DAYS` | 30 | Simulation duration |
-| `INTERVAL_MINUTES` | 5 | Telemetry sample rate |
-| `DEVICE_PROFILES` | 10 entries | Fleet composition — model, stock settings, efficiency |
-| `SITE_LATITUDE` | 64.5 | Controls ambient temperature model |
-| `ENERGY_COST_BASE/PEAK` | 0.035 / 0.065 | Energy pricing bounds ($/kWh) |
-
-Anomaly schedules are defined in `create_anomaly_schedule()` — device index, type, start day, ramp rate, and severity.
+Label columns only (timestamp, device_id, all `label_*` fields) for quick analysis.
 
 ## Usage
 
 ```bash
-python scripts/generate_synthetic_data.py
+# Single scenario
+python scripts/generate_training_corpus.py --scenario data/scenarios/baseline.json
+
+# All scenarios combined into one training corpus
+python scripts/generate_training_corpus.py --all --output data/training/ --seed 42
 ```
 
-Outputs to `data/generated/` by default. Prints fleet composition, anomaly schedule, and summary statistics on completion.
+Outputs to `data/training/` by default.

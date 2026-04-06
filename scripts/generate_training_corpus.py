@@ -282,6 +282,14 @@ def main():
         count = sum(1 for r in all_rows if r.get(key) == 1 or r.get(key) == "1")
         label_stats[key] = count
 
+    # Build top-level fleet list from all scenarios (pipeline tasks expect
+    # metadata["fleet"] with device specs for feature engineering).
+    # Device IDs are prefixed by scenario name in multi-scenario mode,
+    # so there are no collisions.
+    combined_fleet = []
+    for info in scenario_infos:
+        combined_fleet.extend(info.get("fleet", []))
+
     # Build metadata
     metadata = {
         "generator": "MDK Training Corpus Generator v2.0",
@@ -291,7 +299,9 @@ def main():
             "scenario_count": len(scenario_infos),
             "seed_override": args.seed,
             "columns": len(TELEMETRY_COLUMNS),
+            "num_devices": len(combined_fleet),
         },
+        "fleet": combined_fleet,
         "scenarios": scenario_infos,
         "label_stats": label_stats,
         "columns": TELEMETRY_COLUMNS,

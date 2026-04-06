@@ -63,7 +63,7 @@ The fleet intelligence pipeline (`mdk.fleet_intelligence`) is a 7-task DAG that 
 
 ### Rationale
 
-`scripts/generate_synthetic_data.py` currently serves double duty: training data and pipeline input. These are fundamentally different needs. Training requires breadth (many scenarios, long spans, diverse anomalies). Simulation requires statefulness (tick-by-tick progression, real-time-compatible output, speed control). Separating them lets each evolve independently.
+The original monolithic generator served double duty: training data and pipeline input. These are fundamentally different needs. Training requires breadth (many scenarios, long spans, diverse anomalies). Simulation requires statefulness (tick-by-tick progression, real-time-compatible output, speed control). Separating them lets each evolve independently.
 
 ### Architectural Changes
 
@@ -83,7 +83,7 @@ The fleet intelligence pipeline (`mdk.fleet_intelligence`) is a 7-task DAG that 
 
 | File | Change |
 |------|--------|
-| `scripts/generate_synthetic_data.py` | Preserved as-is for reproducibility. New generators import its physics engine. |
+| `scripts/physics_engine.py` | Shared physics module extracted from original generator. |
 
 ### Training Corpus Generator (`generate_training_corpus.py`)
 
@@ -164,7 +164,7 @@ No change to the DAG. The pipeline consumes the same input format regardless of 
 ### Verification Criteria
 
 - [ ] Training corpus generates 90+ day datasets with 10+ devices
-- [ ] Simulation engine produces identical schema to current `generate_synthetic_data.py`
+- [ ] Simulation engine produces identical 35-column telemetry schema
 - [ ] Pipeline runs identically on data from either generator (same output structure, comparable metrics)
 - [ ] `--speed-factor 60` produces one telemetry batch per second
 - [ ] `--offline` completes 30-day simulation in < 30 seconds

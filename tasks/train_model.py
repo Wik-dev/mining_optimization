@@ -9,13 +9,17 @@ t+1h, t+6h, t+24h, t+7d with uncertainty bounds (p10/p50/p90) (Phase 5).
 The classifier answers "is this device anomalous now?" while the regressor
 answers "what will this device's TE_score be at each future horizon?"
 
-Uses time-based train/test split (first 70% train, last 30% test).
+Training uses 100% of the corpus — there is no internal train/test split.
+Evaluation (accuracy, F1, calibration) happens at inference time against
+independently generated data. This decoupling ensures:
+  - Every anomaly type gets full training coverage
+  - No accidental data leakage from temporal splits
+  - Model quality is measured on truly unseen data, not a held-out slice
 
 Inputs:  kpi_timeseries.parquet, fleet_metadata.json
 Outputs: anomaly_model.joblib, regression_model_v{N}.joblib,
          model_metrics.json, model_registry.json
-Vars:    model_accuracy, model_f1, train_samples, test_samples,
-         regression_rmse_1h, regression_rmse_24h, calibration_80_avg, model_version
+Vars:    train_samples, anomaly_rate, model_version
 """
 
 import json
@@ -26,7 +30,6 @@ from datetime import datetime, timezone
 import pandas as pd
 import numpy as np
 import joblib
-from sklearn.metrics import accuracy_score, f1_score, classification_report, mean_squared_error
 from xgboost import XGBClassifier, XGBRegressor
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -69,6 +72,13 @@ ANOMALY_TYPES = {
     "thermal_deg": "label_thermal_deg",
     "psu_instability": "label_psu_instability",
     "hashrate_decay": "label_hashrate_decay",
+    "fan_bearing_wear": "label_fan_bearing_wear",
+    "capacitor_aging": "label_capacitor_aging",
+    "dust_fouling": "label_dust_fouling",
+    "thermal_paste_deg": "label_thermal_paste_deg",
+    "solder_joint_fatigue": "label_solder_joint_fatigue",
+    "coolant_loop_fouling": "label_coolant_loop_fouling",
+    "firmware_cliff": "label_firmware_cliff",
 }
 
 # ── Phase 5: Multi-horizon quantile regression constants ─────────────────
@@ -113,46 +123,33 @@ def prepare_data(df: pd.DataFrame):
     return df_active, X, y, available
 
 
-def time_based_split(df: pd.DataFrame, X: pd.DataFrame, y: pd.Series,
-                     train_ratio: float = 0.7):
-    """Split by time to prevent data leakage."""
-    timestamps = pd.to_datetime(df["timestamp"])
-    cutoff = timestamps.quantile(train_ratio)
+def train_classifier(X, y, name="any_anomaly"):
+    """Train XGBoost binary classifier on the full corpus.
 
-    train_mask = timestamps <= cutoff
-    test_mask = ~train_mask
-
-    return (X[train_mask], X[test_mask],
-            y[train_mask], y[test_mask],
-            df[train_mask], df[test_mask])
-
-
-def train_classifier(X_train, y_train, X_test, y_test, name="any_anomaly"):
-    """Train XGBoost binary classifier. Returns model + metrics."""
-    n_neg = (y_train == 0).sum()
-    n_pos = max((y_train == 1).sum(), 1)
+    No internal evaluation — model quality is assessed at inference time
+    against independently generated data. Returns model only.
+    """
+    n_neg = (y == 0).sum()
+    n_pos = max((y == 1).sum(), 1)
 
     model = XGBClassifier(
         n_estimators=200,
         max_depth=6,
         learning_rate=0.1,
+        # Compensate for class imbalance: healthy rows typically outnumber
+        # anomaly rows. Without this, the model biases toward "healthy."
         scale_pos_weight=n_neg / n_pos,
         eval_metric="logloss",
         random_state=42,
         verbosity=0,
     )
-    model.fit(X_train, y_train)
+    model.fit(X, y)
 
-    y_pred = model.predict(X_test)
-    acc = accuracy_score(y_test, y_pred)
-    f1 = f1_score(y_test, y_pred, zero_division=0)
+    print(f"[{name}] Trained on {len(X):,} samples "
+          f"({int(n_pos):,} positive, {int(n_neg):,} negative, "
+          f"ratio={n_pos/len(X):.1%})")
 
-    print(f"[{name}] Accuracy: {acc:.4f}  F1: {f1:.4f}")
-    print(classification_report(y_test, y_pred,
-                                target_names=["healthy", "anomaly"],
-                                zero_division=0))
-
-    return model, acc, f1
+    return model
 
 
 def get_feature_importance(model, feature_names: list, top_n: int = 15) -> list:
@@ -248,9 +245,8 @@ def create_regression_targets(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(groups, ignore_index=True)
 
 
-def train_quantile_regressor(X_train, y_train, X_test, y_test,
-                             quantile: float, horizon: str):
-    """Train a single XGBRegressor for one horizon × quantile combination.
+def train_quantile_regressor(X, y, quantile: float, horizon: str):
+    """Train a single XGBRegressor for one horizon x quantile combination.
 
     Uses XGBoost's reg:quantileerror objective which minimizes the pinball loss
     for the specified quantile_alpha. This is equivalent to quantile regression
@@ -265,94 +261,48 @@ def train_quantile_regressor(X_train, y_train, X_test, y_test,
         random_state=42,
         verbosity=0,
     )
-    model.fit(X_train, y_train)
+    model.fit(X, y)
 
-    y_pred = model.predict(X_test)
-    rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
-    mae = float(np.mean(np.abs(y_test - y_pred)))
-
-    return model, {"rmse": round(rmse, 6), "mae": round(mae, 6)}
+    return model
 
 
-def train_all_regressors(X_train, X_test, targets_train, targets_test,
-                         feature_names):
-    """Train 12 quantile regressors (4 horizons × 3 quantiles).
+def train_all_regressors(X, targets, feature_names):
+    """Train 12 quantile regressors (4 horizons x 3 quantiles) on full corpus.
 
-    Returns nested dict: {horizon: {quantile_label: model}} and metrics dict.
-    Each horizon uses its own valid subset (rows where the target is not NaN).
+    Returns nested dict: {horizon: {quantile_label: model}} and sample counts.
+    Each horizon uses its own valid subset (rows where the target is not NaN —
+    the last N rows per device have no future data to predict).
     """
     models = {}
-    metrics = {}
+    sample_counts = {}
 
     for horizon_name in HORIZONS:
         target_col = f"target_te_{horizon_name}"
         models[horizon_name] = {}
-        metrics[horizon_name] = {}
 
         # Valid rows for this horizon (no NaN targets)
-        train_valid = targets_train[target_col].notna()
-        test_valid = targets_test[target_col].notna()
+        valid = targets[target_col].notna()
+        X_valid = X[valid]
+        y_valid = targets.loc[valid, target_col]
 
-        Xtr = X_train[train_valid]
-        ytr = targets_train.loc[train_valid, target_col]
-        Xte = X_test[test_valid]
-        yte = targets_test.loc[test_valid, target_col]
-
-        print(f"\n[regression {horizon_name}] Train: {len(Xtr):,}  Test: {len(Xte):,}")
+        print(f"\n[regression {horizon_name}] Training on {len(X_valid):,} samples")
+        sample_counts[horizon_name] = len(X_valid)
 
         # Skip horizons with insufficient data (e.g., 7d horizon on short datasets)
-        if len(Xtr) == 0 or len(Xte) == 0:
+        if len(X_valid) == 0:
             print(f"  Skipping {horizon_name}: insufficient data")
             for quantile in QUANTILES:
                 q_label = f"p{int(quantile * 100)}"
                 models[horizon_name][q_label] = None
-                metrics[horizon_name][q_label] = {"rmse": float("nan"), "mae": float("nan")}
             continue
 
         for quantile in QUANTILES:
             q_label = f"p{int(quantile * 100)}"
-            model, q_metrics = train_quantile_regressor(
-                Xtr, ytr, Xte, yte, quantile, horizon_name
-            )
+            model = train_quantile_regressor(X_valid, y_valid, quantile, horizon_name)
             models[horizon_name][q_label] = model
-            metrics[horizon_name][q_label] = q_metrics
-            print(f"  {q_label}: RMSE={q_metrics['rmse']:.4f}  MAE={q_metrics['mae']:.4f}")
+            print(f"  {q_label}: trained")
 
-    return models, metrics
-
-
-def evaluate_calibration(models: dict, X_test, targets_test) -> dict:
-    """Check calibration: fraction of actuals within [p10, p90] interval.
-
-    Target coverage for an 80% prediction interval is 75-85%. Under 70%
-    indicates overconfident predictions; over 90% indicates overly wide
-    intervals (wasted precision).
-    """
-    calibration = {}
-
-    for horizon_name in HORIZONS:
-        target_col = f"target_te_{horizon_name}"
-        test_valid = targets_test[target_col].notna()
-        Xte = X_test[test_valid]
-        yte = targets_test.loc[test_valid, target_col].values
-
-        if len(yte) == 0 or models[horizon_name]["p10"] is None:
-            calibration[horizon_name] = {"coverage_80": None, "n_samples": 0}
-            continue
-
-        p10_pred = models[horizon_name]["p10"].predict(Xte)
-        p90_pred = models[horizon_name]["p90"].predict(Xte)
-
-        # Fraction of actuals falling within [p10, p90]
-        in_interval = ((yte >= p10_pred) & (yte <= p90_pred)).mean()
-        calibration[horizon_name] = {
-            "coverage_80": round(float(in_interval), 4),
-            "n_samples": int(len(yte)),
-        }
-        print(f"[calibration {horizon_name}] 80% interval coverage: {in_interval:.1%} "
-              f"(target: 75-85%, n={len(yte):,})")
-
-    return calibration
+    return models, sample_counts
 
 
 def get_next_version(registry_path: str) -> int:
@@ -364,13 +314,13 @@ def get_next_version(registry_path: str) -> int:
     return 1
 
 
-def update_registry(registry_path: str, version: int, metrics: dict,
-                    calibration: dict, feature_names: list):
-    """Update model_registry.json with new version, promote if metrics improve.
+def update_registry(registry_path: str, version: int,
+                    sample_counts: dict, feature_names: list):
+    """Update model_registry.json with new version.
 
-    Promotion logic: a new version is promoted to active if its average p50
-    RMSE across all horizons is lower than the current active version's.
-    First version is auto-promoted.
+    Without an internal test split, there are no RMSE/calibration metrics to
+    compare. Promotion is based on training corpus size — a model trained on
+    more data replaces one trained on less. First version is auto-promoted.
     """
     if os.path.exists(registry_path):
         with open(registry_path) as f:
@@ -378,29 +328,19 @@ def update_registry(registry_path: str, version: int, metrics: dict,
     else:
         registry = {"versions": [], "active_version": None, "latest_version": 0}
 
-    # Compute summary metrics for this version
-    avg_rmse_p50 = np.mean([
-        metrics[h]["p50"]["rmse"] for h in HORIZONS
-    ])
-    avg_calibration = np.mean([
-        calibration[h]["coverage_80"]
-        for h in HORIZONS if calibration[h]["coverage_80"] is not None
-    ])
+    total_samples = sum(sample_counts.values())
 
     version_entry = {
         "version": version,
         "trained_at": datetime.now(timezone.utc).isoformat(),
-        "avg_rmse_p50": round(float(avg_rmse_p50), 6),
-        "avg_calibration_80": round(float(avg_calibration), 4),
-        "per_horizon_rmse_p50": {
-            h: metrics[h]["p50"]["rmse"] for h in HORIZONS
-        },
+        "total_regression_samples": total_samples,
+        "per_horizon_samples": sample_counts,
         "artifact": f"regression_model_v{version}.joblib",
         "feature_count": len(feature_names),
     }
 
-    # Promotion: first version auto-promotes; subsequent versions must beat
-    # the active version's avg RMSE (lower is better).
+    # Promotion: first version auto-promotes; subsequent versions trained on
+    # more data replace the active version.
     promote = False
     if registry["active_version"] is None:
         promote = True
@@ -410,17 +350,16 @@ def update_registry(registry_path: str, version: int, metrics: dict,
              if v["version"] == registry["active_version"]),
             None
         )
-        if active is None or avg_rmse_p50 < active["avg_rmse_p50"]:
+        if active is None or total_samples >= active.get("total_regression_samples", 0):
             promote = True
 
     if promote:
         registry["active_version"] = version
         version_entry["promoted"] = True
-        print(f"\nVersion {version} promoted to active (avg RMSE p50: {avg_rmse_p50:.4f})")
+        print(f"\nVersion {version} promoted to active ({total_samples:,} regression samples)")
     else:
         version_entry["promoted"] = False
-        print(f"\nVersion {version} trained but NOT promoted "
-              f"(avg RMSE p50: {avg_rmse_p50:.4f}, active is better)")
+        print(f"\nVersion {version} trained but NOT promoted")
 
     registry["versions"].append(version_entry)
     registry["latest_version"] = version
@@ -440,53 +379,64 @@ def main():
     df["timestamp"] = pd.to_datetime(df["timestamp"])
 
     # ── Prepare ──────────────────────────────────────────────────────────
+    # Train on 100% of the corpus. No internal split — evaluation happens
+    # at inference time against independently generated data.
     df_active, X, y, feature_names = prepare_data(df)
-    X_train, X_test, y_train, y_test, df_train, df_test = time_based_split(
-        df_active, X, y
-    )
+    anomaly_rate = float(y.mean())
 
-    print(f"Train: {len(X_train):,} samples ({y_train.mean():.1%} anomaly)")
-    print(f"Test:  {len(X_test):,} samples ({y_test.mean():.1%} anomaly)")
+    print(f"Training corpus: {len(X):,} samples ({anomaly_rate:.1%} anomaly)")
+    print(f"Devices: {df_active['device_id'].nunique()}")
+    print(f"Features: {len(feature_names)}")
 
     # ── Train primary model (any anomaly) ────────────────────────────────
-    model, acc, f1 = train_classifier(X_train, y_train, X_test, y_test, "any_anomaly")
+    model = train_classifier(X, y, "any_anomaly")
     top_features = get_feature_importance(model, feature_names)
 
     # ── Train per-anomaly-type classifiers ───────────────────────────────
-    print("Per-anomaly-type classifiers:")
+    # Each type gets its own binary classifier trained on the full corpus.
+    # The per-type models are informational — the primary model (any_anomaly)
+    # is what score.py uses for inference. Per-type feature importances help
+    # interpret what the model learned for each failure mode.
+    print("\nPer-anomaly-type classifiers:")
     per_anomaly = {}
     for anomaly_name, label_col in ANOMALY_TYPES.items():
-        y_tr = df_train[label_col].astype(int)
-        y_te = df_test[label_col].astype(int)
+        y_type = df_active[label_col].astype(int)
+        n_positive = int(y_type.sum())
 
-        if y_tr.sum() == 0:
-            print(f"  {anomaly_name}: no positive samples in train — skipped")
-            per_anomaly[anomaly_name] = {"skipped": True, "reason": "no train positives"}
+        if n_positive == 0:
+            print(f"  {anomaly_name}: no positive samples — skipped")
+            per_anomaly[anomaly_name] = {"skipped": True, "reason": "no positives in corpus"}
             continue
 
-        sub_model, sub_acc, sub_f1 = train_classifier(
-            X_train, y_tr, X_test, y_te, anomaly_name
-        )
+        sub_model = train_classifier(X, y_type, anomaly_name)
         sub_feats = get_feature_importance(sub_model, feature_names, top_n=5)
+
+        # How many devices exhibit this anomaly type?
+        devices_affected = int(df_active[df_active[label_col] == 1]["device_id"].nunique())
+
         per_anomaly[anomaly_name] = {
-            "accuracy": round(sub_acc, 4),
-            "f1_score": round(sub_f1, 4),
-            "test_positives": int(y_te.sum()),
+            "train_positives": n_positive,
+            "positive_rate": round(n_positive / len(X), 4),
+            "devices_affected": devices_affected,
             "top_features": sub_feats,
         }
 
     # ── Save classifier artifact ─────────────────────────────────────────
+    # Threshold 0.3: biased toward recall — in mining, a missed failure (FN)
+    # costs far more than an unnecessary inspection (FP).
+    # Full analysis: docs/evaluation-analysis.md
+    CLASSIFIER_THRESHOLD = 0.3
     model_artifact = {
         "model": model,
         "feature_names": feature_names,
-        "threshold": 0.5,
+        "threshold": CLASSIFIER_THRESHOLD,
     }
     joblib.dump(model_artifact, "anomaly_model.joblib")
     print(f"\nClassifier saved: anomaly_model.joblib")
 
-    # ── Phase 5: Multi-horizon quantile regression ───────────────────────
+    # ── Multi-horizon quantile regression ─────────────────────────────────
     print("\n" + "=" * 60)
-    print("Phase 5: Multi-Horizon Quantile Regression")
+    print("Multi-Horizon Quantile Regression")
     print("=" * 60)
 
     # Add temporal features (autoregressive TE inputs)
@@ -502,28 +452,14 @@ def main():
     available_reg = [c for c in reg_feature_names if c in df_temporal.columns]
     X_reg = df_temporal[available_reg].fillna(0).replace([np.inf, -np.inf], 0)
 
-    # Time-based split for regression (same 70/30 ratio)
-    timestamps = pd.to_datetime(df_temporal["timestamp"])
-    cutoff = timestamps.quantile(0.7)
-    train_mask = timestamps <= cutoff
-    test_mask = ~train_mask
-
-    X_reg_train = X_reg[train_mask]
-    X_reg_test = X_reg[test_mask]
-    targets_train = df_temporal[train_mask]
-    targets_test = df_temporal[test_mask]
-
-    print(f"\nRegression data: {len(X_reg_train):,} train, {len(X_reg_test):,} test")
+    print(f"\nRegression data: {len(X_reg):,} samples")
     print(f"Features: {len(available_reg)} ({len(feature_names)} original + "
           f"{len(available_reg) - len(feature_names)} temporal)")
 
-    # Train 12 quantile regressors (4 horizons × 3 quantiles)
-    reg_models, reg_metrics = train_all_regressors(
-        X_reg_train, X_reg_test, targets_train, targets_test, available_reg
+    # Train 12 quantile regressors (4 horizons × 3 quantiles) on full corpus
+    reg_models, reg_sample_counts = train_all_regressors(
+        X_reg, df_temporal, available_reg
     )
-
-    # Evaluate calibration (80% prediction interval coverage)
-    calibration = evaluate_calibration(reg_models, X_reg_test, targets_test)
 
     # ── Model versioning ─────────────────────────────────────────────────
     registry_path = "model_registry.json"
@@ -537,35 +473,29 @@ def main():
         "quantiles": QUANTILES,
         "feature_names": available_reg,
         "models": reg_models,
-        "metrics": reg_metrics,
-        "calibration": calibration,
         "trained_at": datetime.now(timezone.utc).isoformat(),
     }
     artifact_path = f"regression_model_v{version}.joblib"
     joblib.dump(reg_artifact, artifact_path)
     print(f"\nRegression model saved: {artifact_path}")
 
-    # Update registry (auto-promotes if first version or metrics improve)
+    # Update registry (first version auto-promotes)
     promoted, version_entry = update_registry(
-        registry_path, version, reg_metrics, calibration, available_reg
+        registry_path, version, reg_sample_counts, available_reg
     )
 
-    # ── Write metrics (extended with regression section) ──────────────────
-    avg_calibration = np.mean([
-        calibration[h]["coverage_80"]
-        for h in HORIZONS if calibration[h]["coverage_80"] is not None
-    ])
-
+    # ── Write metrics (training statistics only) ──────────────────────────
+    # No accuracy/F1/calibration — those are inference-time metrics evaluated
+    # against independently generated data.
     metrics = {
         "model": "XGBClassifier",
-        "train_samples": len(X_train),
-        "test_samples": len(X_test),
-        "accuracy": round(acc, 4),
-        "f1_score": round(f1, 4),
+        "train_samples": len(X),
+        "anomaly_rate": round(anomaly_rate, 4),
+        "devices": int(df_active["device_id"].nunique()),
+        "feature_count": len(feature_names),
         "top_features": top_features,
         "per_anomaly_type": per_anomaly,
-        "threshold": 0.5,
-        # Phase 5 regression metrics
+        "threshold": CLASSIFIER_THRESHOLD,
         "regression": {
             "model_type": "multi_horizon_quantile_regression",
             "version": version,
@@ -574,18 +504,9 @@ def main():
             "quantiles": QUANTILES,
             "feature_count": len(available_reg),
             "per_horizon": {
-                h: {
-                    "rmse_p50": reg_metrics[h]["p50"]["rmse"],
-                    "mae_p50": reg_metrics[h]["p50"]["mae"],
-                    "calibration_80": calibration[h]["coverage_80"],
-                    "test_samples": calibration[h]["n_samples"],
-                }
+                h: {"train_samples": reg_sample_counts[h]}
                 for h in HORIZONS
             },
-            "avg_rmse_p50": round(float(np.nanmean([
-                reg_metrics[h]["p50"]["rmse"] for h in HORIZONS
-            ])), 6),
-            "avg_calibration_80": round(float(avg_calibration), 4),
         },
     }
 
@@ -594,13 +515,8 @@ def main():
 
     with open("_validance_vars.json", "w") as f:
         json.dump({
-            "model_accuracy": round(acc, 4),
-            "model_f1": round(f1, 4),
-            "train_samples": len(X_train),
-            "test_samples": len(X_test),
-            "regression_rmse_1h": reg_metrics["1h"]["p50"]["rmse"],
-            "regression_rmse_24h": reg_metrics["24h"]["p50"]["rmse"],
-            "calibration_80_avg": round(float(avg_calibration), 4),
+            "train_samples": len(X),
+            "anomaly_rate": round(anomaly_rate, 4),
             "model_version": version,
         }, f)
 

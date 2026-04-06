@@ -1,13 +1,13 @@
 """
 Shared fixtures for mining optimization integration tests.
 
-Session-scoped pipeline run: generates a small dataset, runs the full 9-task
-training pipeline once, and shares artifacts across all test classes.
+Session-scoped pipeline run: generates a small dataset, runs the full 8-task
+training pipeline once (ingest → features → kpi → train → score → trend →
+optimize → report), and shares artifacts across all test classes.
 """
 
 import json
 import os
-import shutil
 import sys
 
 import pytest
@@ -62,7 +62,7 @@ MINI_SCENARIO = {
 
 
 def _run_pipeline(work_dir: str):
-    """Run the full 9-task training pipeline in work_dir."""
+    """Run the full 8-task training pipeline in work_dir."""
     orig_dir = os.getcwd()
     orig_argv = sys.argv
 
@@ -77,7 +77,6 @@ def _run_pipeline(work_dir: str):
         from tasks.train_model import main as train_main
         from tasks.score import main as score_main
         from tasks.trend_analysis import main as trend_main
-        from tasks.cost_projection import main as cost_main
         from tasks.optimize import main as optimize_main
         from tasks.report import main as report_main
 
@@ -99,9 +98,6 @@ def _run_pipeline(work_dir: str):
         print("\n=== Pipeline: trend_analysis ===")
         trend_main()
 
-        print("\n=== Pipeline: cost_projection ===")
-        cost_main()
-
         print("\n=== Pipeline: optimize ===")
         optimize_main()
 
@@ -115,17 +111,13 @@ def _run_pipeline(work_dir: str):
 
 @pytest.fixture(scope="session")
 def pipeline_dir(tmp_path_factory):
-    """Generate mini dataset -> run full 9-task training pipeline -> return artifact dir."""
+    """Generate mini dataset -> run full 8-task training pipeline -> return artifact dir."""
     work_dir = str(tmp_path_factory.mktemp("pipeline"))
 
     # Write mini scenario JSON
     scenario_path = os.path.join(work_dir, "mini_scenario.json")
     with open(scenario_path, "w") as f:
         json.dump(MINI_SCENARIO, f, indent=2)
-
-    # Copy cost_model.json (required by cost_projection.py)
-    cost_model_src = os.path.join(PROJECT_ROOT, "data", "cost_model.json")
-    shutil.copy2(cost_model_src, os.path.join(work_dir, "cost_model.json"))
 
     # Generate dataset via simulation engine
     scripts_dir = os.path.join(PROJECT_ROOT, "scripts")
@@ -163,7 +155,6 @@ def pipeline_artifacts(pipeline_dir):
     for name in [
         "fleet_risk_scores", "fleet_actions", "fleet_metadata",
         "model_metrics", "model_registry", "trend_analysis",
-        "cost_projections",
     ]:
         path = os.path.join(pipeline_dir, f"{name}.json")
         if os.path.exists(path):

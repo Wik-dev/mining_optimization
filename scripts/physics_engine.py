@@ -5,8 +5,7 @@ Shared Physics Engine for Mining Fleet Simulation
 Provides device models, physics simulation, anomaly injection, and telemetry
 emission used by both generate_training_corpus.py and simulation_engine.py.
 
-The original generate_synthetic_data.py is preserved unchanged. This module
-extracts and extends its physics into a reusable library with:
+Core physics library with:
     - 10 device models (was 4)
     - 10 anomaly types (was 3)
     - Fan, dust, Arrhenius aging, solder fatigue, coolant fouling models
@@ -75,7 +74,7 @@ ERROR_PIC_READ = "PIC_READ_ERROR"
 #             rated_temp_c, nominal_chip_count, nominal_hashboard_count
 
 DEVICE_MODELS = {
-    # ── Existing 4 models (identical specs to generate_synthetic_data.py) ──
+    # ── Existing 4 models (identical specs to the original v1 generator) ──
     "S21-HYD": {
         "stock_clock_ghz": 1.60,
         "stock_voltage_v": 0.30,
@@ -375,7 +374,7 @@ def energy_price(hour: float, day: int, site: dict) -> float:
 def compute_operating_mode(device: DeviceState, e_price: float, t_ambient: float) -> str:
     """Rule-based operating mode selection.
 
-    Identical logic to original generate_synthetic_data.py.
+    Identical logic to original the original v1 generator.
     """
     if e_price > 0.06:
         return MODE_UNDERCLOCK
@@ -393,7 +392,7 @@ def step_physics(device: DeviceState, t_ambient: float, dt_hours: float) -> None
 
     Preserves original physics exactly, then layers new models on top.
     The original thermal_resistance, power, hashrate, temperature, and cooling
-    calculations are identical to generate_synthetic_data.py.
+    calculations are identical to the original v1 generator.
     """
     mode = device.mode
 
@@ -1197,10 +1196,10 @@ def create_anomaly_schedules_from_scenario(scenario: dict) -> List[AnomalySchedu
     return schedules
 
 
-# ─── Default Fleet (matches original generate_synthetic_data.py exactly) ─────
+# ─── Default Fleet (matches original the original v1 generator exactly) ─────
 
 def create_default_fleet() -> List[DeviceState]:
-    """Create the original 10-device fleet from generate_synthetic_data.py.
+    """Create the original 10-device fleet from the original v1 generator.
 
     Identical composition: 2×S21-HYD, 2×M66S, 3×S19XP, 3×S19jPro.
     """
@@ -1234,7 +1233,7 @@ def create_default_fleet() -> List[DeviceState]:
 
 
 def create_default_anomaly_schedule() -> List[AnomalySchedule]:
-    """Create the original anomaly schedule from generate_synthetic_data.py.
+    """Create the original anomaly schedule from the original v1 generator.
 
     Identical: 2× thermal_deg, 1× psu_instability, 2× hashrate_decay.
     """

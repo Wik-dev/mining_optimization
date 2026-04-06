@@ -71,8 +71,16 @@ def load_regression_model(registry_path="model_registry.json"):
 
     artifact_path = active_entry["artifact"]
     if not os.path.exists(artifact_path):
-        print(f"Warning: regression artifact {artifact_path} not found, skipping predictions")
-        return None, None
+        # Workflow input mapping may rename the file (e.g., registry says
+        # "regression_model_v1.joblib" but the worker creates "regression_model.joblib"
+        # from the input key). Try the generic name as fallback.
+        fallback = "regression_model.joblib"
+        if os.path.exists(fallback):
+            print(f"Registry artifact {artifact_path} not found, using {fallback}")
+            artifact_path = fallback
+        else:
+            print(f"Warning: regression artifact {artifact_path} not found, skipping predictions")
+            return None, None
 
     artifact = joblib.load(artifact_path)
     return artifact, active_version
@@ -188,6 +196,11 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Score fleet devices for anomaly risk")
     parser.add_argument("--model-path", default="anomaly_model.joblib",
                         help="Path to classifier model artifact (default: anomaly_model.joblib)")
+    # Override the classification threshold baked into the model artifact
+    # (default 0.3). Lower → higher recall, more inspections.
+    # See docs/evaluation-analysis.md for rationale and tuning guide.
+    parser.add_argument("--threshold", type=float, default=None,
+                        help="Override anomaly probability threshold (default: use model artifact value)")
     return parser.parse_args()
 
 
@@ -201,7 +214,10 @@ def main():
     artifact = joblib.load(args.model_path)
     model = artifact["model"]
     feature_names = artifact["feature_names"]
-    threshold = artifact["threshold"]
+    # CLI --threshold overrides the model artifact value without retraining.
+    threshold = args.threshold if args.threshold is not None else artifact["threshold"]
+    print(f"Classification threshold: {threshold}"
+          f"{' (CLI override)' if args.threshold is not None else ' (from model artifact)'}")
 
     with open("fleet_metadata.json") as f:
         meta = json.load(f)

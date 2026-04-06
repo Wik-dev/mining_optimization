@@ -1,9 +1,9 @@
 """
-Full pipeline integration tests — verifies the 9-task DAG produces correct
+Full pipeline integration tests — verifies the 8-task pipeline produces correct
 artifacts with valid schemas, value ranges, and cross-task consistency.
 
 Uses the session-scoped pipeline_dir fixture from conftest.py (mini dataset,
-5 devices, 7 days, run once per session).
+5 devices, 14 days, run once per session).
 """
 
 import json
@@ -204,17 +204,6 @@ class TestCrossTaskConsistency:
                 f"Flagged device {device_id} should not be HEALTHY, got {tier}"
             )
 
-    def test_cost_projections_cover_all_devices(self, pipeline_artifacts):
-        """cost_projections.json should have an entry for every scored device."""
-        risk_devices = {
-            d["device_id"] for d in pipeline_artifacts["fleet_risk_scores"]["device_risks"]
-        }
-        cost_devices = {
-            d["device_id"]
-            for d in pipeline_artifacts["cost_projections"]["device_projections"]
-        }
-        missing = risk_devices - cost_devices
-        assert not missing, f"Devices in risk_scores but not in cost_projections: {missing}"
 
 
 # ─── Model Quality ────────────────────────────────────────────────────────────
@@ -331,7 +320,7 @@ class TestGracefulFallbacks:
     """Verify pipeline handles missing optional inputs."""
 
     def test_optimize_without_trends(self, pipeline_dir):
-        """optimize.py runs when trend_analysis.json is absent (v1.1 tier-only mode)."""
+        """optimize.py runs when trend_analysis.json is absent (static tier-only mode)."""
         import shutil
         import tempfile
 
@@ -343,7 +332,7 @@ class TestGracefulFallbacks:
                     os.path.join(pipeline_dir, f),
                     os.path.join(fallback_dir, f),
                 )
-            # Deliberately skip trend_analysis.json and cost_projections.json
+            # Deliberately skip trend_analysis.json
 
             orig_dir = os.getcwd()
             orig_argv = sys.argv
@@ -360,41 +349,8 @@ class TestGracefulFallbacks:
             assert os.path.exists(actions_path)
             with open(actions_path) as f:
                 data = json.load(f)
-            # Should fall back to tier-only controller
-            assert "1.1" in data["controller_version"] or "1.0" in data["controller_version"]
-        finally:
-            shutil.rmtree(fallback_dir, ignore_errors=True)
-
-    def test_optimize_without_costs(self, pipeline_dir):
-        """optimize.py runs when cost_projections.json is absent."""
-        import shutil
-        import tempfile
-
-        fallback_dir = tempfile.mkdtemp(prefix="opt_no_cost_")
-        try:
-            for f in ["fleet_risk_scores.json", "fleet_metadata.json",
-                       "kpi_timeseries.parquet", "trend_analysis.json"]:
-                src = os.path.join(pipeline_dir, f)
-                if os.path.exists(src):
-                    shutil.copy2(src, os.path.join(fallback_dir, f))
-            # Deliberately skip cost_projections.json
-
-            orig_dir = os.getcwd()
-            orig_argv = sys.argv
-            try:
-                os.chdir(fallback_dir)
-                sys.argv = ["optimize"]
-                from tasks.optimize import main as optimize_main
-                optimize_main()
-            finally:
-                os.chdir(orig_dir)
-                sys.argv = orig_argv
-
-            actions_path = os.path.join(fallback_dir, "fleet_actions.json")
-            assert os.path.exists(actions_path)
-            with open(actions_path) as f:
-                data = json.load(f)
-            assert len(data["actions"]) > 0
+            # Should run tier-only controller
+            assert "tier-only" in data["controller_version"] or "2.0" in data["controller_version"]
         finally:
             shutil.rmtree(fallback_dir, ignore_errors=True)
 

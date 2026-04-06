@@ -6,12 +6,12 @@ as an engine-managed persistent task.
 
 The simulation_loop.py orchestrator inside the container:
   1. Generates telemetry batches via SimulationEngine
-  2. Triggers mdk.fleet_intelligence (training, cycle 0)
-  3. Triggers mdk.fleet_intelligence.inference (cycles 1..N)
-  4. Chains runs via session_hash + continue_from
+  2. Chains mdk.pre_processing → mdk.train (training, cycle 0)
+  3. Chains mdk.pre_processing → mdk.score → mdk.analyze (cycles 1..N)
+  4. Links runs via session_hash + continue_from
 
-Parameters:
-  - scenario_path: path to scenario JSON
+Parameters (trigger-time, exposed as CTX_* env vars):
+  - scenario_path: URI to scenario JSON (file:// or azure://)
   - cycles: number of inference cycles after training
   - api_url: workflow engine API URL (for inner triggers)
 
@@ -34,21 +34,23 @@ def create_workflow() -> Workflow:
     # Single persistent task: the simulation loop orchestrator.
     # Runs simulation_loop.py inside the container, which generates telemetry
     # batches and triggers inner workflow runs via the engine's REST API.
-    # The container accesses the API via Docker network (WORKFLOW_API_URL env var).
+    #
+    # Trigger parameters become CTX_* env vars (ADR-005 §2.3):
+    #   api_url     → CTX_API_URL       (read by simulation_loop.py)
+    #   cycles      → CTX_CYCLES        (shell-expanded in command)
+    #   cost_model_path → CTX_COST_MODEL_PATH (read by simulation_loop.py)
+    #   scenario_path → resolved as input URI
     orchestrator = Task(
         name="simulation_orchestrator",
         command=(
             "python /app/scripts/simulation_loop.py"
             " --scenario /work/scenario.json"
-            " --cycles ${cycles}"
+            ' --cycles "$CTX_CYCLES"'
             " --output-dir /work"
         ),
         docker_image=TASK_IMAGE,
         inputs={
             "scenario.json": "${scenario_path}",
-        },
-        environment={
-            "WORKFLOW_API_URL": "${api_url}",
         },
         output_files={
             "metrics": "simulation_metrics.json",

@@ -80,7 +80,7 @@ def run_simulation(scenario_path: str = None, output_path: str = None,
         effective_seed = seed if seed is not None else scenario.get("seed", 42)
         scenario_name = scenario.get("name", "custom")
     else:
-        # Default: replicate original generate_synthetic_data.py behavior
+        # Default: 10-device fleet with 3 anomaly types (baseline config)
         site = dict(SITE_ARCHETYPES["northern"])
         economic = dict(DEFAULT_ECONOMIC)
         devices = create_default_fleet()
@@ -424,6 +424,8 @@ class SimulationEngine:
                 {
                     "device_id": dev.device_id,
                     "model": dev.model,
+                    "stock_clock_ghz": dev.stock_clock_ghz,
+                    "stock_voltage_v": dev.stock_voltage_v,
                     "nominal_hashrate_th": dev.nominal_hashrate_th,
                     "nominal_power_w": dev.nominal_power_w,
                     "nominal_efficiency_jth": dev.efficiency_jth,

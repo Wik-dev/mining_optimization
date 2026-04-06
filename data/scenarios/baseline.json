@@ -1,6 +1,6 @@
 {
   "name": "baseline",
-  "description": "Healthy baseline — 10 devices (original fleet composition), 30 days, no anomalies. Northern site with hydro power, cool climate. Matches original generate_synthetic_data.py fleet for direct comparison.",
+  "description": "Healthy baseline — 10 devices (original fleet composition), 30 days, no anomalies. Northern site with hydro power, cool climate.",
   "seed": 42,
   "duration_days": 30,
   "interval_minutes": 5,

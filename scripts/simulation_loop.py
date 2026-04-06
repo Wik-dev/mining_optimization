@@ -8,12 +8,12 @@ triggers pipeline runs for each interval, and chains runs into a session via
 continuation hashes.
 
 Cycle 0 (training):
-    SimulationEngine.advance(24h) → batch CSV → trigger mdk.fleet_intelligence
-    → full 9-task DAG → produces anomaly_model.joblib
+    SimulationEngine.advance(24h) → batch CSV →
+    mdk.pre_processing → mdk.train (chained via continue_from)
 
 Cycles 1..N (inference):
-    SimulationEngine.advance(1h) → batch CSV → trigger mdk.fleet_intelligence.inference
-    → 8-task DAG (skip train) → uses pre-trained model
+    SimulationEngine.advance(1h) → batch CSV →
+    mdk.pre_processing → mdk.score → mdk.analyze (chained via continue_from)
 
 Error handling:
     - Retry with exponential backoff (3 attempts: 5s, 15s, 45s)
@@ -140,7 +140,7 @@ class WorkflowAPIClient:
         """Trigger a workflow execution and return the workflow hash.
 
         Args:
-            workflow_name: e.g. "mdk.fleet_intelligence"
+            workflow_name: e.g. "mdk.fleet_training"
             parameters: workflow parameters dict
             session_hash: session identifier for continuation chain
             continue_from: previous workflow hash for continuation
@@ -202,7 +202,7 @@ class WorkflowAPIClient:
                 if resp.status_code == 200:
                     data = resp.json()
                     status = data.get("status", "unknown")
-                    if status in ("completed", "failed", "error"):
+                    if status in ("completed", "success", "failed", "error"):
                         return data
             except (ConnectionError, OSError) as e:
                 logger.debug("Poll error (will retry): %s", e)
@@ -212,18 +212,20 @@ class WorkflowAPIClient:
         raise TimeoutError(
             f"Workflow {workflow_hash} did not complete within {POLL_TIMEOUT}s")
 
-    def get_file_url(self, workflow_hash: str, file_key: str) -> Optional[str]:
-        """Get the storage URL for a workflow output file.
+    def get_file_url(self, workflow_hash: str, file_name: str) -> Optional[str]:
+        """Get the storage URI for a workflow output file by name.
 
-        Used to retrieve the model artifact path from a completed training run.
-        Falls back to a path convention if the API doesn't support file retrieval.
+        Searches the files list from GET /api/files/{hash} for a matching
+        output file. Returns the file:// or azure:// URI.
         """
-        url = f"{self.base_url}/api/files/{workflow_hash}/{file_key}"
+        url = f"{self.base_url}/api/files/{workflow_hash}"
         try:
             resp = self._session.get(url, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
-                return data.get("path", data.get("url", None))
+                for f in data.get("files", []):
+                    if f.get("file_name") == file_name and f.get("is_output"):
+                        return f.get("uri", "")
         except (ConnectionError, OSError):
             pass
         return None
@@ -259,6 +261,13 @@ class SimulationLoop:
 
         # Circuit breaker state
         self._consecutive_failures = 0
+
+    @staticmethod
+    def _to_file_uri(path: str) -> str:
+        """Prepend file:// to an absolute path if not already a URI."""
+        if path.startswith('/') and '://' not in path:
+            return f"file://{path}"
+        return path
 
     def run(self) -> SimulationMetrics:
         """Execute the full simulation loop: 1 training + N inference cycles."""
@@ -335,7 +344,7 @@ class SimulationLoop:
                 result.elapsed_seconds = time.monotonic() - t0
                 return result
 
-            # Trigger the appropriate workflow
+            # Trigger the appropriate workflow chain
             if mode == "training":
                 wf_hash = self._trigger_training(batch_csv, batch_meta)
             else:
@@ -344,17 +353,17 @@ class SimulationLoop:
 
             result.workflow_hash = wf_hash
 
-            # Poll for completion
-            wf_name = ("mdk.fleet_intelligence" if mode == "training"
-                        else "mdk.fleet_intelligence.inference")
-            status = self.api.poll_completion(wf_name, wf_hash)
+            # Poll for completion of the final workflow in the chain
+            final_wf = "mdk.train" if mode == "training" else "mdk.analyze"
+            status = self.api.poll_completion(final_wf, wf_hash)
 
-            if status.get("status") == "completed":
+            if status.get("status") in ("completed", "success"):
                 result.success = True
                 # Extract model path from training run
                 if mode == "training":
-                    model_url = self.api.get_file_url(wf_hash, "model_artifact")
+                    model_url = self.api.get_file_url(wf_hash, "anomaly_model.joblib")
                     result.model_path = model_url or ""
+                    logger.info("  Model artifact: %s", result.model_path or "(not found)")
             else:
                 result.error = f"Workflow {wf_hash} ended with status: {status.get('status')}"
 
@@ -366,36 +375,74 @@ class SimulationLoop:
         return result
 
     def _trigger_training(self, batch_csv: str, batch_meta: str) -> str:
-        """Trigger the full training workflow (cycle 0)."""
-        return self.api.trigger_workflow(
-            workflow_name="mdk.fleet_intelligence",
-            parameters={
-                "telemetry_csv_path": batch_csv,
-                "metadata_json_path": batch_meta,
-            },
+        """Trigger training chain: pre_processing → train (cycle 0)."""
+        params = {
+            "telemetry_csv_path": self._to_file_uri(batch_csv),
+            "metadata_json_path": self._to_file_uri(batch_meta),
+        }
+        # Step 1: pre_processing
+        pp_hash = self.api.trigger_workflow(
+            workflow_name="mdk.pre_processing",
+            parameters=params,
             session_hash=self.session_hash,
+        )
+        status = self.api.poll_completion("mdk.pre_processing", pp_hash)
+        if status.get("status") not in ("completed", "success"):
+            raise RuntimeError(f"pre_processing failed: {status}")
+
+        # Step 2: train (continue_from pre_processing)
+        return self.api.trigger_workflow(
+            workflow_name="mdk.train",
+            parameters={},
+            session_hash=self.session_hash,
+            continue_from=pp_hash,
         )
 
     def _trigger_inference(self, batch_csv: str, batch_meta: str,
                            prev_hash: Optional[str]) -> str:
-        """Trigger the inference workflow (cycles 1..N)."""
-        params = {
-            "telemetry_csv_path": batch_csv,
-            "metadata_json_path": batch_meta,
-            "model_path": self.metrics.model_path,
+        """Trigger inference chain: pre_processing → score → analyze (cycles 1..N)."""
+        # Step 1: pre_processing
+        pp_params = {
+            "telemetry_csv_path": self._to_file_uri(batch_csv),
+            "metadata_json_path": self._to_file_uri(batch_meta),
         }
-        # Model metrics from training run (optional — report handles absence)
-        if self.metrics.training_workflow_hash:
-            metrics_url = self.api.get_file_url(
-                self.metrics.training_workflow_hash, "model_metrics")
-            if metrics_url:
-                params["model_metrics_path"] = metrics_url
-
-        return self.api.trigger_workflow(
-            workflow_name="mdk.fleet_intelligence.inference",
-            parameters=params,
+        pp_hash = self.api.trigger_workflow(
+            workflow_name="mdk.pre_processing",
+            parameters=pp_params,
             session_hash=self.session_hash,
             continue_from=prev_hash,
+        )
+        status = self.api.poll_completion("mdk.pre_processing", pp_hash)
+        if status.get("status") not in ("completed", "success"):
+            raise RuntimeError(f"pre_processing failed: {status}")
+
+        # Step 2: score (continue_from pre_processing, model from training)
+        score_params = {
+            "model_path": self.metrics.model_path,
+        }
+        score_hash = self.api.trigger_workflow(
+            workflow_name="mdk.score",
+            parameters=score_params,
+            session_hash=self.session_hash,
+            continue_from=pp_hash,
+        )
+        status = self.api.poll_completion("mdk.score", score_hash)
+        if status.get("status") not in ("completed", "success"):
+            raise RuntimeError(f"score failed: {status}")
+
+        # Step 3: analyze (continue_from score)
+        analyze_params = {}
+        if self.metrics.training_workflow_hash:
+            metrics_url = self.api.get_file_url(
+                self.metrics.training_workflow_hash, "model_metrics.json")
+            if metrics_url:
+                analyze_params["model_metrics_path"] = metrics_url
+
+        return self.api.trigger_workflow(
+            workflow_name="mdk.analyze",
+            parameters=analyze_params,
+            session_hash=self.session_hash,
+            continue_from=score_hash,
         )
 
     def _write_metrics(self):
@@ -432,12 +479,15 @@ def main():
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Resolve API URL: CLI arg > env var > default
-    api_url = args.api_url or os.environ.get("WORKFLOW_API_URL",
-                                              "http://localhost:8000")
+    # Resolve API URL: CLI arg > CTX_API_URL (engine param) > WORKFLOW_API_URL > default
+    api_url = (args.api_url
+               or os.environ.get("CTX_API_URL")
+               or os.environ.get("WORKFLOW_API_URL")
+               or "http://localhost:8000")
 
-    # Create simulation engine
-    batch_dir = os.path.join(args.output_dir, "batches")
+    # Create simulation engine — use absolute paths so file:// URIs resolve
+    output_dir = os.path.abspath(args.output_dir)
+    batch_dir = os.path.join(output_dir, "batches")
     sim_engine = SimulationEngine(
         scenario_path=args.scenario,
         output_dir=batch_dir,
@@ -461,7 +511,7 @@ def main():
         api_client=api_client,
         cycles=args.cycles,
         offline=args.offline,
-        output_dir=args.output_dir,
+        output_dir=output_dir,
     )
 
     metrics = loop.run()

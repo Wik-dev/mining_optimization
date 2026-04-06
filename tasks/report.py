@@ -116,14 +116,37 @@ def plot_health_scores(df: pd.DataFrame) -> str:
 
 
 def plot_anomaly_timeline(df: pd.DataFrame) -> str:
-    """Ground-truth anomaly labels over time per device."""
-    label_cols = {
-        "label_thermal_deg": ("Thermal Degradation", "#F44336"),
-        "label_psu_instability": ("PSU Instability", "#FF9800"),
-        "label_hashrate_decay": ("Hashrate Decay", "#9C27B0"),
-    }
+    """Ground-truth anomaly labels over time per device.
 
-    fig, axes = plt.subplots(len(label_cols), 1, figsize=(14, 8), sharex=True)
+    Dynamically discovers all label_* columns present in the data rather
+    than hardcoding a fixed set. This handles any scenario (baseline with
+    3 types, asic_aging with 4, etc.) without code changes.
+    """
+    # Color palette for up to 10 anomaly types
+    palette = ["#F44336", "#FF9800", "#9C27B0", "#2196F3", "#4CAF50",
+               "#E91E63", "#00BCD4", "#795548", "#607D8B", "#CDDC39"]
+
+    # Discover label columns that have at least one positive sample
+    label_cols = {}
+    for col in sorted(df.columns):
+        if col.startswith("label_") and col != "label_any_anomaly":
+            if df[col].max() > 0:
+                name = col.replace("label_", "").replace("_", " ").title()
+                label_cols[col] = (name, palette[len(label_cols) % len(palette)])
+
+    if not label_cols:
+        # No anomaly labels present (e.g., baseline scenario)
+        fig, ax = plt.subplots(figsize=(14, 3))
+        ax.text(0.5, 0.5, "No anomalies present in this scenario",
+                transform=ax.transAxes, ha="center", va="center",
+                fontsize=14, color="#999")
+        ax.set_title("Ground-Truth Anomaly Timeline")
+        return fig_to_base64(fig)
+
+    n = len(label_cols)
+    fig, axes = plt.subplots(n, 1, figsize=(14, max(4, n * 2.2)), sharex=True)
+    if n == 1:
+        axes = [axes]
 
     for ax, (col, (title, color)) in zip(axes, label_cols.items()):
         for device_id, group in df.groupby("device_id"):
@@ -306,6 +329,8 @@ def plot_calibration_diagram(metrics: dict) -> str:
         return ""
 
     # Bar chart of calibration coverage per horizon
+    # Calibration is now an inference-time metric — only present if the
+    # inference pipeline evaluated predictions against ground truth.
     coverage_vals = []
     labels = []
     for h in horizons:
@@ -356,33 +381,21 @@ def plot_model_comparison(metrics: dict) -> str:
     if not horizons or not per_horizon:
         return ""
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5),
-                                    gridspec_kw={"width_ratios": [1, 2]})
+    fig, ax = plt.subplots(figsize=(7, 5))
 
-    # Left panel: Classifier metrics
-    clf_metrics = ["F1 Score", "Accuracy"]
-    clf_values = [metrics["f1_score"] * 100, metrics["accuracy"] * 100]
-    ax1.barh(clf_metrics, clf_values, color=["#2196F3", "#4CAF50"])
-    ax1.set_xlim(0, 105)
-    ax1.set_xlabel("Score (%)")
-    ax1.set_title("Classifier Performance")
-    for i, v in enumerate(clf_values):
-        ax1.text(v + 1, i, f"{v:.1f}%", va="center", fontsize=10)
-    ax1.grid(True, alpha=0.3, axis="x")
-
-    # Right panel: Regressor RMSE per horizon
-    rmse_vals = [per_horizon[h]["rmse_p50"] for h in horizons]
+    # Training statistics: samples per horizon
+    sample_vals = [per_horizon[h].get("train_samples", 0) for h in horizons]
     x = range(len(horizons))
-    bars = ax2.bar(x, rmse_vals, color="#FF9800", alpha=0.8)
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(horizons)
-    ax2.set_ylabel("RMSE (TE_score units)")
-    ax2.set_xlabel("Prediction Horizon")
-    ax2.set_title("Regressor RMSE (p50 median forecast)")
-    for bar, v in zip(bars, rmse_vals):
-        ax2.text(bar.get_x() + bar.get_width() / 2, v + 0.001,
-                f"{v:.4f}", ha="center", fontsize=9)
-    ax2.grid(True, alpha=0.3, axis="y")
+    bars = ax.bar(x, sample_vals, color="#2196F3", alpha=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels(horizons)
+    ax.set_ylabel("Training Samples")
+    ax.set_xlabel("Prediction Horizon")
+    ax.set_title("Regression Training Samples per Horizon")
+    ax.grid(True, alpha=0.3, axis="y")
+    for bar, val in zip(bars, sample_vals):
+        ax.text(bar.get_x() + bar.get_width() / 2, val,
+                f"{val:,.0f}", ha="center", va="bottom", fontsize=9)
 
     fig.tight_layout()
     return fig_to_base64(fig)
@@ -853,6 +866,193 @@ def _build_economic_section(cost_data: dict, charts: dict) -> str:
     """
 
 
+def _build_evaluation_section(eval_data: dict) -> str:
+    """Build the Evaluation Results HTML section from evaluation_report.json.
+
+    Shows classifier performance (confusion matrix, F1) and regression accuracy
+    (RMSE, calibration) from the independent evaluation against ground truth.
+    """
+    if not eval_data:
+        return ""
+
+    clf = eval_data.get("classifier", {})
+    reg = eval_data.get("regression", {})
+    data_summary = eval_data.get("data_summary", {})
+    cm = clf.get("confusion_matrix", {})
+
+    # Per-device classifier results
+    per_device_rows = ""
+    for dev in clf.get("per_device", []):
+        prob = dev["predicted_prob"]
+        correct = dev["correct"]
+        flag = dev["predicted_flag"]
+        actual = dev["actual_flag"]
+
+        # Color code: green=correct, red=error
+        row_color = "#4CAF50" if correct else "#F44336"
+        flag_str = "FLAG" if flag else ""
+        actual_str = "ANOM" if actual else ""
+        types_str = ", ".join(dev.get("actual_types", [])) or "&mdash;"
+
+        # Classification outcome
+        if actual and flag:
+            outcome = "TP"
+        elif not actual and flag:
+            outcome = "FP"
+        elif actual and not flag:
+            outcome = "FN"
+        else:
+            outcome = "TN"
+
+        per_device_rows += f"""
+        <tr>
+            <td>{dev['device_id']}</td>
+            <td>{prob:.4f}</td>
+            <td>{flag_str}</td>
+            <td>{actual_str}</td>
+            <td>{types_str}</td>
+            <td style="color:{row_color};font-weight:bold">{outcome}</td>
+        </tr>"""
+
+    # Regression results per horizon
+    reg_rows = ""
+    for h_key, h_data in sorted(reg.get("per_horizon", {}).items(),
+                                  key=lambda x: {"1h": 0, "6h": 1, "24h": 2, "7d": 3}.get(x[0], 9)):
+        cal = h_data.get("calibration_80", 0)
+        cal_color = "#4CAF50" if 0.75 <= cal <= 0.85 else "#FF9800"
+        reg_rows += f"""
+        <tr>
+            <td>{h_key}</td>
+            <td>{h_data.get('devices_evaluated', 0)}</td>
+            <td>{h_data.get('rmse_p50', 0):.4f}</td>
+            <td>{h_data.get('mae_p50', 0):.4f}</td>
+            <td style="color:{cal_color};font-weight:bold">{cal:.0%}</td>
+            <td>{h_data.get('mean_actual_te', 0):.4f}</td>
+            <td>{h_data.get('mean_predicted_te', 0):.4f}</td>
+        </tr>"""
+
+    f1 = clf.get("f1_score", 0)
+    f1_color = "#4CAF50" if f1 >= 0.8 else "#FF9800" if f1 >= 0.5 else "#F44336"
+
+    return f"""
+    <h2>Evaluation Results</h2>
+    <p>Predictions evaluated against ground truth from independently generated data.
+       Evaluation window: {clf.get('scoring_window', {}).get('start', '')} &mdash;
+       {clf.get('scoring_window', {}).get('end', '')} |
+       {data_summary.get('devices', 0)} devices |
+       {data_summary.get('rows', 0):,} rows</p>
+
+    <div>
+        <div class="metric">
+            <div class="value" style="color:{f1_color}">{f1:.2f}</div>
+            <div class="label">Classifier F1 Score</div>
+        </div>
+        <div class="metric">
+            <div class="value">{clf.get('precision', 0):.2f}</div>
+            <div class="label">Precision</div>
+        </div>
+        <div class="metric">
+            <div class="value">{clf.get('recall', 0):.2f}</div>
+            <div class="label">Recall</div>
+        </div>
+        <div class="metric">
+            <div class="value">{cm.get('tp', 0)}/{cm.get('fp', 0)}/{cm.get('fn', 0)}</div>
+            <div class="label">TP / FP / FN</div>
+        </div>
+    </div>
+
+    <h3>Per-Device Classification</h3>
+    <table>
+        <tr><th>Device</th><th>Prob</th><th>Predicted</th><th>Actual</th><th>Anomaly Types</th><th>Outcome</th></tr>
+        {per_device_rows}
+    </table>
+
+    <h3>Regression Accuracy (Multi-Horizon TE Forecast)</h3>
+    <table>
+        <tr><th>Horizon</th><th>Devices</th><th>RMSE (p50)</th><th>MAE (p50)</th><th>Calibration 80%</th><th>Mean Actual TE</th><th>Mean Predicted TE</th></tr>
+        {reg_rows}
+    </table>
+    """
+
+
+def _build_roi_section(roi_data: dict) -> str:
+    """Build the ROI Comparison HTML section from roi_comparison.json.
+
+    Shows the economic value of the AI controller: controlled vs uncontrolled
+    fleet economics, broken down by classifier outcome (TP/FP/FN).
+    """
+    if not roi_data:
+        return ""
+
+    per_horizon = roi_data.get("per_horizon", {})
+    if not per_horizon:
+        return ""
+
+    # Use 168h (1 week) as the primary horizon
+    h_key = "168h"
+    h_data = per_horizon.get(h_key, {})
+    if not h_data:
+        h_key = list(per_horizon.keys())[0]
+        h_data = per_horizon[h_key]
+
+    delta = h_data.get("delta_usd", 0)
+    roi_pct = h_data.get("roi_pct", 0)
+    roi_color = "#4CAF50" if roi_pct > 0 else "#F44336" if roi_pct < 0 else "#666"
+
+    # All horizons table
+    horizon_rows = ""
+    for hk, hd in sorted(per_horizon.items(),
+                           key=lambda x: int(x[0].rstrip("h"))):
+        d = hd.get("delta_usd", 0)
+        r = hd.get("roi_pct", 0)
+        color = "#4CAF50" if d > 0 else "#F44336" if d < 0 else "#666"
+        horizon_rows += f"""
+        <tr>
+            <td>{hk}</td>
+            <td>{hd.get('devices', 0)}</td>
+            <td>${hd.get('uncontrolled_net_usd', 0):,.0f}</td>
+            <td>${hd.get('controlled_net_usd', 0):,.0f}</td>
+            <td style="color:{color};font-weight:bold">${d:+,.0f}</td>
+            <td style="color:{color};font-weight:bold">{r:+.1f}%</td>
+            <td>${hd.get('tp_benefit_usd', 0):+,.0f}</td>
+            <td>${hd.get('fp_cost_usd', 0):+,.0f}</td>
+            <td>${hd.get('fn_missed_benefit_usd', 0):+,.0f}</td>
+        </tr>"""
+
+    return f"""
+    <h2>ROI: Controlled vs Uncontrolled Fleet</h2>
+    <p>Economic comparison: AI-controlled fleet (classifier + controller + cost optimizer)
+       versus uncontrolled operation (no anomaly detection, no preventive action).
+       Accounts for real classifier accuracy &mdash; FN devices get no benefit, FP devices incur
+       unnecessary inspection costs.</p>
+
+    <div>
+        <div class="metric">
+            <div class="value" style="color:{roi_color}">{roi_pct:+.0f}%</div>
+            <div class="label">ROI ({h_key})</div>
+        </div>
+        <div class="metric">
+            <div class="value" style="color:{roi_color}">${delta:+,.0f}</div>
+            <div class="label">Savings ({h_key})</div>
+        </div>
+        <div class="metric">
+            <div class="value">${h_data.get('tp_benefit_usd', 0):+,.0f}</div>
+            <div class="label">TP Savings</div>
+        </div>
+        <div class="metric">
+            <div class="value">${h_data.get('fp_cost_usd', 0):+,.0f}</div>
+            <div class="label">FP Cost</div>
+        </div>
+    </div>
+
+    <h3>Multi-Horizon Comparison</h3>
+    <table>
+        <tr><th>Horizon</th><th>Devices</th><th>Uncontrolled</th><th>Controlled</th><th>Delta</th><th>ROI</th><th>TP Benefit</th><th>FP Cost</th><th>FN Missed</th></tr>
+        {horizon_rows}
+    </table>
+    """
+
+
 def build_agent_actions_html(agent_actions: list) -> str:
     """Build the Agent Action Log section HTML.
 
@@ -901,7 +1101,8 @@ def build_agent_actions_html(agent_actions: list) -> str:
 
 def build_html(charts: dict, risk_scores: dict, metrics: dict,
                actions_data: dict, meta: dict, summary: dict,
-               agent_actions: list = None, cost_data: dict = None) -> str:
+               agent_actions: list = None, cost_data: dict = None,
+               eval_data: dict = None, roi_data: dict = None) -> str:
     """Assemble HTML report."""
 
     # Agent action log section (backward-compatible — empty if no agent actions)
@@ -909,6 +1110,12 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
 
     # Economic analysis section (Phase 4 — conditional on cost_projections.json)
     economic_section_html = _build_economic_section(cost_data, charts) if cost_data else ""
+
+    # Evaluation results (classifier + regression accuracy against ground truth)
+    evaluation_section_html = _build_evaluation_section(eval_data) if eval_data else ""
+
+    # ROI comparison (controlled vs uncontrolled fleet economics)
+    roi_section_html = _build_roi_section(roi_data) if roi_data else ""
 
     # Risk table
     risks_html = ""
@@ -954,18 +1161,18 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
             <td style="font-size:11px">{rationale}</td>
         </tr>"""
 
-    # Per-anomaly-type table
+    # Per-anomaly-type table — shows training coverage per type
     per_anomaly_html = ""
     per_anomaly = metrics.get("per_anomaly_type", {})
     for atype, info in per_anomaly.items():
         if info.get("skipped"):
-            per_anomaly_html += f"<tr><td>{atype}</td><td colspan='4'>Skipped</td></tr>"
+            per_anomaly_html += f"<tr><td>{atype}</td><td colspan='3'>No positives in corpus</td></tr>"
         else:
             top_feat = info["top_features"][0]["feature"] if info.get("top_features") else "N/A"
             per_anomaly_html += (
-                f"<tr><td>{atype}</td><td>{info['f1_score']:.1%}</td>"
-                f"<td>{info['accuracy']:.1%}</td>"
-                f"<td>{info['test_positives']}</td>"
+                f"<tr><td>{atype}</td>"
+                f"<td>{info.get('train_positives', 0):,}</td>"
+                f"<td>{info.get('devices_affected', 0)}</td>"
                 f"<td>{top_feat}</td></tr>"
             )
 
@@ -1021,8 +1228,8 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
             <div class="label">Active Devices</div>
         </div>
         <div class="metric">
-            <div class="value">{metrics['f1_score']:.1%}</div>
-            <div class="label">Anomaly Detection F1</div>
+            <div class="value">{metrics.get('train_samples', 0):,}</div>
+            <div class="label">Training Samples</div>
         </div>
         <div class="metric critical">
             <div class="value">{summary['tier_counts'].get('CRITICAL', 0)}</div>
@@ -1076,6 +1283,10 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
 
     {economic_section_html}
 
+    {evaluation_section_html}
+
+    {roi_section_html}
+
     {charts.get('trend_section', '')}
 
     <h2>True Efficiency Over Time</h2>
@@ -1112,18 +1323,17 @@ def build_html(charts: dict, risk_scores: dict, metrics: dict,
     {"" if not charts.get('feature_importance') else f'''<h2>Top Predictive Features</h2>
     <div class="chart"><img src="data:image/png;base64,{charts['feature_importance']}" /></div>'''}
 
-    {"" if not per_anomaly_html else f'''<h2>Per-Anomaly-Type Detection</h2>
+    {"" if not per_anomaly_html else f'''<h2>Per-Anomaly-Type Training Coverage</h2>
     <table>
-        <tr><th>Anomaly Type</th><th>F1 Score</th><th>Accuracy</th><th>Test Positives</th><th>Top Feature</th></tr>
+        <tr><th>Anomaly Type</th><th>Training Positives</th><th>Devices Affected</th><th>Top Feature</th></tr>
         {per_anomaly_html}
     </table>'''}
 
     <div class="footer">
         Model: {metrics['model']}
-        {f"| Train: {metrics['train_samples']:,} samples | Test: {metrics['test_samples']:,} samples" if metrics.get('train_samples') else ""}
-        {f"| Accuracy: {metrics['accuracy']:.1%} | F1: {metrics['f1_score']:.1%}" if metrics.get('f1_score') else ""} |
-        Controller: {actions_data['controller_version']} |
-        Workflow: mdk.fleet_intelligence
+        {f"| Trained on {metrics['train_samples']:,} samples ({metrics.get('anomaly_rate', 0):.0%} anomaly)" if metrics.get('train_samples') else ""}
+        | Controller: {actions_data['controller_version']}
+        | Workflow: mdk.fleet
     </div>
 </body>
 </html>"""
@@ -1142,10 +1352,8 @@ def main():
     except FileNotFoundError:
         metrics = {
             "model": "XGBoost (pre-trained)",
-            "accuracy": 0.0,
-            "f1_score": 0.0,
             "train_samples": 0,
-            "test_samples": 0,
+            "anomaly_rate": 0.0,
             "top_features": [],
             "per_anomaly_type": {},
             "threshold": 0.5,
@@ -1162,6 +1370,26 @@ def main():
             agent_actions = json.load(f)
     except FileNotFoundError:
         pass
+
+    # Evaluation results — classifier + regression accuracy against ground truth.
+    # Generated by scripts/evaluate_predictions.py. See docs/evaluation-analysis.md.
+    eval_data = None
+    if os.path.exists("evaluation_report.json"):
+        with open("evaluation_report.json") as f:
+            eval_data = json.load(f)
+        print("Including evaluation results in report")
+    else:
+        print("No evaluation_report.json — skipping evaluation section")
+
+    # ROI comparison — controlled vs uncontrolled economics.
+    # Generated by scripts/roi_comparison.py. See docs/evaluation-analysis.md §7.
+    roi_data = None
+    if os.path.exists("roi_comparison.json"):
+        with open("roi_comparison.json") as f:
+            roi_data = json.load(f)
+        print("Including ROI comparison in report")
+    else:
+        print("No roi_comparison.json — skipping ROI section")
 
     df["timestamp"] = pd.to_datetime(df["timestamp"])
 
@@ -1274,7 +1502,8 @@ def main():
 
     # ── Build HTML ───────────────────────────────────────────────────────
     html = build_html(charts, risk_scores, metrics, actions_data, meta, summary,
-                      agent_actions=agent_actions, cost_data=cost_data)
+                      agent_actions=agent_actions, cost_data=cost_data,
+                      eval_data=eval_data, roi_data=roi_data)
 
     with open("report.html", "w") as f:
         f.write(html)
