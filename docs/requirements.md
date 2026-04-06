@@ -4,12 +4,13 @@
 
 Wiktor Lisowski | April 2026
 
-Last edited: 2026-04-05
+Last edited: 2026-04-06
 
 ### Change Log
 
 | Date | Change |
 |------|--------|
+| 2026-04-06 | Updated DR-CAL-09: 37→43 features with hardware health sensor group |
 | 2026-04-05 | Added DR-CAL-09 (feature selection scope), updated traceability matrix |
 | 2026-04-05 | Initial version |
 
@@ -257,7 +258,7 @@ Architectural decisions grouped by quality attribute. Each names the decision, t
 | DR-CAL-06 | Class imbalance handled via `scale_pos_weight = n_negative / n_positive` in the classifier.                                                                                      | Training stability           | Avoids oversampling artifacts (SMOTE) or undersampling information loss. The classifier sees weighted loss proportional to class rarity.                         | SMOTE, class-weighted loss, focal loss       | SR-AD-06  |
 | DR-CAL-07 | Retraining triggered when rolling RMSE exceeds 2x baseline for 3 consecutive cycles, or calibration drift exceeds 30%, or KS-test detects fleet regime shift.                    | Model freshness              | Multiple trigger conditions catch different drift modes: prediction accuracy degradation, uncertainty miscalibration, and distributional shift.                  | Online learning, sliding-window retraining   | SR-CO-04  |
 | DR-CAL-08 | Synthetic telemetry noise uses 0.5% Gaussian on hashrate, 1 mV Gaussian on voltage ripple, 20 RPM Gaussian on fan speed. Power has no additive sensor noise (deterministic CMOS model). | Training data realism        | Conservative noise floor ensures the classifier learns degradation patterns, not sensor artifacts. At 0.5% hashrate noise, a 2% efficiency drift is clearly separable; at 5% it would not be. | Lognormal noise, site-calibrated noise profiles from real MOS telemetry | SR-CO-03  |
-| DR-CAL-09 | 37 features selected by domain grouping (TE decomposition, rolling stats, rates of change, interactions, fleet-relative, site conditions). No automated feature selection (RFE, LASSO, ablation). | Interpretability, robustness | With synthetic training data, automated selection risks overfitting to generator artifacts. Domain-grouped selection ensures every feature has a stated physical or operational justification. `energy_price_kwh` is a known exception — included for controller context but lacks health-detection justification. | Recursive Feature Elimination, SHAP-based selection, or L1-regularized pre-filter — appropriate once real MOS telemetry is available for validation | SR-AD-01  |
+| DR-CAL-09 | 43 features selected by domain grouping (TE decomposition, rolling stats, rates of change, interactions, fleet-relative, site conditions, hardware health sensors). No automated feature selection (RFE, LASSO, ablation). | Interpretability, robustness | With synthetic training data, automated selection risks overfitting to generator artifacts. Domain-grouped selection ensures every feature has a stated physical or operational justification. `energy_price_kwh` is a known exception — included for controller context but lacks health-detection justification. Hardware health sensors (6) are raw telemetry passthroughs providing early warning for fan bearing wear, PSU capacitor aging, solder fatigue, and dust fouling. | Recursive Feature Elimination, SHAP-based selection, or L1-regularized pre-filter — appropriate once real MOS telemetry is available for validation | SR-AD-01  |
 
 
 ---
@@ -267,7 +268,7 @@ Architectural decisions grouped by quality attribute. Each names the decision, t
 
 | UR    | SR       | DR                              | Code module                                                        | Test                                                                                   |
 | ----- | -------- | ------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
-| UR-01 | SR-AD-01 | DR-REP-01, DR-SAF-01, DR-CAL-09 | `tasks/train_model.py:38-61`, `tasks/score.py`                     | `test_classification_f1`, `test_risk_score_range`                                      |
+| UR-01 | SR-AD-01 | DR-REP-01, DR-SAF-01, DR-CAL-09 | `tasks/train_model.py:38-67`, `tasks/score.py`                     | `test_classification_f1`, `test_risk_score_range`                                      |
 | UR-01 | SR-PA-01 | DR-REP-02, DR-CAL-01            | `tasks/train_model.py` (Phase 5), `tasks/score.py`                 | `test_regression_model_exists`, `test_model_registry_valid`                            |
 | UR-01 | SR-PA-02 | DR-INT-04                       | `tasks/trend_analysis.py`                                          | `test_step_change_detect`, `test_gradual_drift`, `test_stationary_no_alarm`            |
 | UR-01 | SR-PA-03 | DR-INT-04                       | `tasks/trend_analysis.py`                                          | `test_exact_crossing_time`, `test_moving_away`, `test_already_below`                   |

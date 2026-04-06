@@ -58,6 +58,12 @@ FEATURE_COLS = [
     "hashrate_th_fleet_z", "efficiency_jth_fleet_z",
     # Site conditions
     "ambient_temp_c", "energy_price_kwh",
+    # Hardware health sensors (6 features) — raw telemetry passthrough.
+    # Research: deep-research-report-mining.md, notes_mining_data.md
+    # identify these as strongest early warning signals for fan bearing
+    # wear, PSU capacitor aging, solder fatigue, and dust fouling.
+    "fan_rpm", "voltage_ripple_mv", "reboot_count",
+    "chip_count_active", "hashboard_count_active", "dust_index",
 ]
 # Available but not yet included: hashrate_th_mean_30m, hashrate_th_std_30m
 # (30-min rolling hashrate, approximating MOS hashrate_30m resolution).

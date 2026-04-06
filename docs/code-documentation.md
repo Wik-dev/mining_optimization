@@ -4,12 +4,13 @@
 
 Wiktor Lisowski | April 2026
 
-Last edited: 2026-04-05
+Last edited: 2026-04-06
 
 ### Change Log
 
 | Date | Change |
 |------|--------|
+| 2026-04-06 | Added 6 hardware health sensor features (`fan_rpm`, `voltage_ripple_mv`, `reboot_count`, `chip_count_active`, `hashboard_count_active`, `dust_index`) — updated §1.4, §2.10, §3.8, §3.9 feature counts (37→43 classifier, 43→49 regressor) |
 | 2026-04-05 | Added §1.4 feature computation timeline, expanded §2.10 (score.py) with feature justifications, known gaps, scoring window rationale |
 | 2026-04-05 | Initial version |
 
@@ -233,6 +234,7 @@ Where each feature group is born and consumed across pipeline stages:
 | Fleet-relative | `{col}_fleet_z` | per-model z-score per timestamp | yes |
 | Interaction | `power_per_ghz`, `thermal_headroom_c`, `cooling_effectiveness`, `hashrate_ratio`, `voltage_deviation` | point-in-time ratios | yes |
 | Site conditions | `ambient_temp_c`, `energy_price_kwh` | passthrough | yes (but `energy_price` is **questionable** — see [§2.10 Gaps](#score)) |
+| Hardware health | `fan_rpm`, `voltage_ripple_mv`, `reboot_count`, `chip_count_active`, `hashboard_count_active`, `dust_index` | raw telemetry passthrough | yes |
 
 `{col}` = `temperature_c`, `power_w`, `hashrate_th`, `voltage_v`, `cooling_power_w`, `efficiency_jth`
 
@@ -258,7 +260,7 @@ Where each feature group is born and consumed across pipeline stages:
 | `te_score_slope_6h` | `polyfit(72)` | 6h linear trend |
 | `te_score_volatility_24h` | `std(288)` | 24h rolling std |
 
-**Model consumption**: Classifier uses stages 1+2 (37 features). Regressor uses stages 1+2+3 (37 + 6 = 43 features).
+**Model consumption**: Classifier uses stages 1+2 (43 features). Regressor uses stages 1+2+3 (43 + 6 = 49 features).
 
 #### History dependency at inference
 
@@ -398,7 +400,7 @@ How far back each model path looks, shown as a timeline from oldest data to pres
 
 #### Feature justification
 
-All 37 classifier features and 6 regressor-only temporal features, with domain justification and confidence level:
+All 43 classifier features and 6 regressor-only temporal features, with domain justification and confidence level:
 
 | Group | Count | Features | Justification | Strength |
 |-------|-------|----------|---------------|----------|
@@ -408,13 +410,14 @@ All 37 classifier features and 6 regressor-only temporal features, with domain j
 | Interaction | 5 | `power_per_ghz`, `thermal_headroom_c`, `cooling_effectiveness`, `hashrate_ratio`, `voltage_deviation` | Physics-motivated diagnostic ratios. `power_per_ghz` ≈ constant if healthy; `thermal_headroom` = distance to limit | Strong |
 | Fleet-relative | 4 | `{col}_fleet_z` for temp, power, hashrate, efficiency | Relative performance vs peers (same model, same timestamp). Catches individual device drift that absolute values miss | Reasonable |
 | Site conditions | 2 | `ambient_temp_c`, `energy_price_kwh` | `ambient_temp_c`: relevant (affects cooling). `energy_price_kwh`: **no physical relationship to device health** — economic signal leaked into health detector | Weak (`energy_price`) |
+| Hardware health sensors | 6 | `fan_rpm`, `voltage_ripple_mv`, `reboot_count`, `chip_count_active`, `hashboard_count_active`, `dust_index` | Raw telemetry passthrough from physics engine. Strongest early warning signals for fan bearing wear (RPM decline), PSU capacitor aging (ripple increase), solder fatigue (chip dropout), dust fouling (accumulation index). See `deep-research-report-mining.md`, `notes_mining_data.md` | Strong |
 | Temporal (regressor only) | 6 | `te_score_lag_{1h,6h,24h}`, `te_score_slope_{1h,6h}`, `te_score_volatility_24h` | Autoregressive features encoding trajectory. Lags = level at past horizons, slopes = trend direction, volatility = stability | Strong |
 
-Total: 37 (classifier) / 43 (regressor = 37 + 6 temporal).
+Total: 43 (classifier) / 49 (regressor = 43 + 6 temporal).
 
 #### Known gaps and limitations
 
-1. **No feature selection / ablation study** — all 37 features included by default. No evidence that dropping any specific feature hurts performance. XGBoost's built-in feature importance provides ranking but not necessity. See DR-CAL-09.
+1. **No feature selection / ablation study** — all 43 features included by default. No evidence that dropping any specific feature hurts performance. XGBoost's built-in feature importance provides ranking but not necessity. See DR-CAL-09.
 
 2. **Window sizes are convention, not calibrated** — 1h/12h/24h are round numbers. Comment in `features.py` mentions MOS provides 5s/5m/30m resolutions, but the windows don't map to those. The 12h window is computed but excluded from the model entirely.
 
@@ -422,9 +425,9 @@ Total: 37 (classifier) / 43 (regressor = 37 + 6 temporal).
 
 4. **Fleet z-scores are snapshot-only** — computed per timestamp, not over a window. A device slowly drifting away from fleet median over days isn't captured; only instant divergence is visible.
 
-5. **19 computed features are unused** — `features.py` computes ~56 features; only 37 are in `FEATURE_COLS`. The 12h rolling means (6), 24h stds for most cols (5), raw diffs (4), 30m hashrate (2), and two 1h stds are excluded. Documented as "future work" but no ablation justifies exclusion either.
+5. **19 computed features are unused** — `features.py` computes ~56 features; only 43 are in `FEATURE_COLS` (37 computed + 6 raw telemetry passthrough). The 12h rolling means (6), 24h stds for most cols (5), raw diffs (4), 30m hashrate (2), and two 1h stds are excluded. Documented as "future work" but no ablation justifies exclusion either.
 
-6. **Classifier and regressor see different feature sets** — classifier gets 37 point-in-time features, regressor gets 43 (37 + 6 temporal). The temporal features are the regressor's main advantage, but they're computed in both `train_model.py` and `score.py` (same logic, duplicated code).
+6. **Classifier and regressor see different feature sets** — classifier gets 43 point-in-time features, regressor gets 49 (43 + 6 temporal). The temporal features are the regressor's main advantage, but they're computed in both `train_model.py` and `score.py` (same logic, duplicated code).
 
 7. **Scoring window is fixed at 24h** — no adaptive window. A degradation that started 36h ago shows diluted signal vs one that started 6h ago.
 
@@ -862,7 +865,7 @@ Joblib-pickled Python dict:
 ```python
 {
     "model": XGBClassifier,            # Trained binary classifier
-    "feature_names": [str],            # 37 feature names (see §2.9)
+    "feature_names": [str],            # 43 feature names (see §2.9)
     "threshold": float                 # 0.3 default, CLI-overridable
 }
 ```
@@ -881,7 +884,7 @@ Joblib-pickled Python dict:
     "version": int,
     "horizons": ["1h", "6h", "24h", "7d"],
     "quantiles": [0.1, 0.5, 0.9],
-    "feature_names": [str],            # 37 base + 6 temporal = 43
+    "feature_names": [str],            # 43 base + 6 temporal = 49
     "models": {
         "1h": {"p10": XGBRegressor, "p50": XGBRegressor, "p90": XGBRegressor},
         "6h": {...},
