@@ -27,7 +27,7 @@ export PYTHONPATH="$(cd ../validance-workflow && pwd)"
 # 1. Register workflows with Validance (~5s)
 python scripts/register_validance_workflows.py --api-url http://localhost:8001
 
-# 2. Run the full training chain: generate data → preprocess → train (~10 min)
+# 2. Run the full training chain: generate data → preprocess → train (~45 min)
 python scripts/orchestrate_training.py --api-url http://localhost:8001
 
 # 3. Run inference: preprocess → score → analyze → report (~7 min)
@@ -120,10 +120,10 @@ python scripts/orchestrate_training.py --api-url http://localhost:8001
 
 This chains three workflows automatically:
 1. **generate_corpus** — synthetic data generation (~45s)
-2. **pre_processing** — ingest, features, KPI (~3-4 min)
-3. **train** — XGBoost classifier + quantile regressors (~3-4 min)
+2. **pre_processing** — ingest, features, KPI (~1-2 min)
+3. **train** — XGBoost classifier + quantile regressors (~41 min)
 
-Total: ~10 minutes.
+Total: ~45 minutes.
 
 To skip corpus generation and use existing data:
 
@@ -181,7 +181,7 @@ python scripts/orchestrate_inference.py \
   --api-url http://localhost:8001 \
   --telemetry-csv /work/fleet_telemetry.csv \
   --metadata-json /work/fleet_metadata.json \
-  --training-hash 483379d07426668e
+  --training-hash fa6d414fd91dd1ab
 ```
 
 Model artifacts (anomaly_model.joblib, regression_model, model_metrics) are resolved automatically via Validance's `continue_from` deep context chain — no explicit file paths needed. The training hash is printed at the end of the training chain (§2.1).
@@ -239,7 +239,7 @@ Click "Start Simulation" in the dashboard sidebar, select a scenario, and the da
 ```bash
 python scripts/orchestrate_simulation.py \
   --scenario data/scenarios/asic_aging.json \
-  --training-hash 483379d07426668e \
+  --training-hash fa6d414fd91dd1ab \
   --api-url http://localhost:8001
 ```
 
@@ -249,7 +249,7 @@ Model artifacts are resolved via `continue_from` deep context — the training h
 # 7-day intervals → fewer cycles (26 instead of 180), faster demo
 python scripts/orchestrate_simulation.py \
   --scenario data/scenarios/asic_aging.json \
-  --training-hash 483379d07426668e \
+  --training-hash fa6d414fd91dd1ab \
   --interval-days 7
 ```
 

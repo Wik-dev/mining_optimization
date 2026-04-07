@@ -114,7 +114,7 @@ const res = await fetch("/api/workflows/mdk.fleet_simulation/trigger", {
   body: JSON.stringify({
     parameters: {
       scenario_path: `file:///home/Wik-dev/repos/mining_optimization/data/scenarios/${scenarioName}.json`,
-      training_hash: "483379d07426668e",  // hash of the training run — model resolved via deep context
+      training_hash: "fa6d414fd91dd1ab",  // hash of the training run — model resolved via deep context
       api_url: "http://172.17.0.1:8001",  // container reaches host API via Docker bridge
       interval_days: "1",
     },
@@ -129,7 +129,7 @@ const { workflow_hash } = await res.json();
 
 ```bash
 # Train model (all 5 scenarios, ~35 min) — only needed once
-# Produces a training hash (e.g., 483379d07426668e) used by the dashboard trigger.
+# Produces a training hash (e.g., fa6d414fd91dd1ab) used by the dashboard trigger.
 python scripts/orchestrate_training.py --api-url http://localhost:8001
 # The training hash is printed at the end. Update the dashboard config if re-trained.
 ```
