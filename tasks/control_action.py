@@ -146,15 +146,25 @@ def action_underclock(params: dict) -> dict:
     """
     device_id = params.get("device_id")
     target_pct = params.get("target_pct")
+    value_ghz = params.get("value_ghz")
     reason = params.get("reason", "")
 
-    if not device_id or target_pct is None:
-        return {"status": "rejected", "reason": "Missing required: device_id and target_pct"}
+    if not device_id or (target_pct is None and value_ghz is None):
+        return {"status": "rejected", "reason": "Missing required: device_id and target_pct (or value_ghz)"}
 
     risk_scores, actions_data, metadata = load_fleet_data()
     spec = get_device_spec(device_id, metadata)
     if spec is None:
         return {"status": "rejected", "reason": f"Unknown device: {device_id}"}
+
+    # Accept value_ghz as alternative to target_pct — compute percentage from
+    # the device's stock clock speed. This allows callers (e.g., dashboards)
+    # that know the target GHz but not the stock clock to submit proposals.
+    if target_pct is None and value_ghz is not None:
+        stock_ghz = spec.get("stock_clock_ghz")
+        if not stock_ghz:
+            return {"status": "rejected", "reason": f"No stock_clock_ghz for device {device_id}"}
+        target_pct = round(value_ghz / stock_ghz * 100, 1)
 
     risk = get_device_risk(device_id, risk_scores)
     action = get_device_action(device_id, actions_data)
