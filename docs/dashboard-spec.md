@@ -32,15 +32,16 @@ The system simulates a real mining operation running continuously. The dashboard
 │      cutoff grows: day 1, day 2, ... day N                         │
 │      Each cycle sees ALL history from t=0 to cutoff                │
 │                                                                     │
-│  Inner workflows visible as separate runs in GET /api/runs         │
+│  All inner workflows share the dashboard's session_hash            │
+│  (passed as trigger parameter → CTX_SESSION_HASH)                  │
 └───────────────────────────┬─────────────────────────────────────────┘
                             │
                             ↓
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Validance API  (REST, port 8001)                                   │
 │                                                                     │
-│  GET /api/runs → [hash_T0, hash_T1, hash_T2, ...]   ← timeline   │
-│  GET /api/files/{hash}/download → JSON snapshot per cycle          │
+│  GET /api/executions?session={hash} → all runs for this simulation │
+│  GET /api/files/{score_hash}/download → fleet_risk_scores.json     │
 │  POST /api/proposals → command approval pipeline                    │
 │  GET /api/audit → immutable decision history                        │
 └───────────────────────────┬─────────────────────────────────────────┘
@@ -117,12 +118,14 @@ const res = await fetch("/api/workflows/mdk.fleet_simulation/trigger", {
       training_hash: "fa6d414fd91dd1ab",  // hash of the training run — model resolved via deep context
       api_url: "http://172.17.0.1:8001",  // container reaches host API via Docker bridge
       interval_days: "1",
+      session_hash: sessionHash,  // propagated to all inner workflows (→ CTX_SESSION_HASH)
     },
-    session_hash: sessionHash,
+    session_hash: sessionHash,    // also set on the outer workflow execution record
   }),
 });
 const { workflow_hash } = await res.json();
-// This hash = the outer simulation workflow. Inner cycles appear as separate runs.
+// All 540+ inner workflows (generate_batch, pre_processing, score, analyze × 180)
+// share this session_hash — queryable via GET /api/executions?session=
 ```
 
 **Backend prerequisite** (run by operator before dashboard use):
@@ -163,10 +166,13 @@ New data points appear as each inference cycle completes (~1-2 minutes apart in 
 **Detecting simulation progress**:
 
 ```javascript
-// Count completed analyze runs to track cycle progress
-const analyzeRes = await fetch("/api/runs?workflow_name=mdk.analyze&status=SUCCESS&limit=200");
-const analyzeData = await analyzeRes.json();
-const completedCycles = analyzeData.total;
+// Query all runs for this simulation session (ADR-002)
+const res = await fetch(`/api/executions?session=${sessionHash}`);
+const { workflows } = await res.json();
+
+// Group by workflow type
+const scores = workflows.filter(w => w.workflow_name === "mdk.score" && w.status === "SUCCESS");
+const completedCycles = scores.length;
 
 // Total cycles = scenario duration_days / interval_days
 // (known from the scenario selected in State 1)
@@ -234,17 +240,48 @@ Each inference cycle triggers: `mdk.pre_processing(cutoff) → mdk.score → mdk
 ### What the dashboard sees
 
 ```
-GET /api/runs?workflow_name=mdk.analyze&limit=200
+GET /api/executions?session={sessionHash}
 
-→ [
-    { "workflow_hash": "fff...", "end_time": "...", "status": "SUCCESS" },  ← Day N (newest)
-    { "workflow_hash": "eee...", "end_time": "...", "status": "SUCCESS" },  ← Day N-1
-    ...
-    { "workflow_hash": "aaa...", "end_time": "...", "status": "SUCCESS" },  ← Day 1 (oldest)
-  ]
+→ {
+    "session_hash": "dash_9b320ec6-...",
+    "workflows": [
+      { "workflow_hash": "aaa...", "workflow_name": "mdk.pre_processing", "status": "SUCCESS",
+        "parameters": { "cutoff_timestamp": "2026-04-03T00:00:00", ... } },
+      { "workflow_hash": "bbb...", "workflow_name": "mdk.score",          "status": "SUCCESS", ... },
+      { "workflow_hash": "ccc...", "workflow_name": "mdk.analyze",        "status": "SUCCESS", ... },
+      // cycle 2...
+      { "workflow_hash": "ddd...", "workflow_name": "mdk.pre_processing", "status": "SUCCESS",
+        "parameters": { "cutoff_timestamp": "2026-04-04T00:00:00", ... } },
+      { "workflow_hash": "eee...", "workflow_name": "mdk.score",          "status": "SUCCESS", ... },
+      { "workflow_hash": "fff...", "workflow_name": "mdk.analyze",        "status": "SUCCESS", ... },
+      ...
+    ]
+  }
 ```
 
-Each hash → download `fleet_risk_scores.json` → extract per-device `mean_risk`, `te_score`, `tier`, etc. → stitch into time-series arrays client-side. Each cycle's data reflects the full accumulated history up to that day, not just that day's slice.
+Each cycle = 3 sequential workflows. The `cutoff_timestamp` in `mdk.pre_processing` parameters identifies which simulated day this cycle represents — use it to place data points on the timeline.
+
+### File ownership per workflow
+
+**Important**: each workflow type owns different output files. Use the correct `workflow_hash` when downloading.
+
+| Workflow | Task | File | Description |
+|----------|------|------|-------------|
+| `mdk.pre_processing` | `ingest_telemetry` | `fleet_telemetry.csv` | Raw telemetry (large) |
+| `mdk.pre_processing` | `ingest_telemetry` | `fleet_metadata.json` | Device specs (static) |
+| `mdk.pre_processing` | `compute_true_efficiency` | `kpi_timeseries.parquet` | Feature data |
+| **`mdk.score`** | **`score_fleet`** | **`fleet_risk_scores.json`** | **Risk scores — primary dashboard data** |
+| `mdk.analyze` | (none) | — | Outputs are task variables, not files |
+
+```javascript
+// To get fleet_risk_scores.json for a cycle:
+// 1. Find the mdk.score workflow for that cycle
+const scores = workflows.filter(w => w.workflow_name === "mdk.score" && w.status === "SUCCESS");
+// 2. Download using the SCORE hash (not analyze hash)
+const data = await fetch(`/api/files/${scores[i].workflow_hash}/download?file_name=fleet_risk_scores.json&task_name=score_fleet`);
+```
+
+Each cycle's data reflects the full accumulated history up to that day (growing window), not just that day's slice.
 
 ### Demo scenario
 
@@ -282,56 +319,71 @@ The story: *"Watch the fleet degrade over months and the system respond — navi
 1. GET /api/health
    → Verify backend is up
 
-2. GET /api/runs?workflow_name=mdk.analyze&status=SUCCESS&limit=50
-   → Get all historical inference run hashes + timestamps
-   → Sort by end_time ascending (oldest first)
+2. GET /api/executions?session={sessionHash}
+   → Get all workflow runs for this simulation session
+   → Filter to mdk.score with status=SUCCESS → these are the completed cycles
+   → Sort by start_time ascending (oldest first)
 
-3. For each run hash (parallel, Promise.all):
-   GET /api/files/{hash}/download?file_name=fleet_risk_scores.json&task_name=score_fleet
+3. For each mdk.score hash (parallel, Promise.all):
+   GET /api/files/{score_hash}/download?file_name=fleet_risk_scores.json&task_name=score_fleet
    → Parse JSON, extract device_risks[]
+   → Map to cutoff_timestamp from the corresponding mdk.pre_processing parameters
 
 4. Build client-side timeline state:
    timeline = [
-     { t: "T+1h", hash: "aaa...", devices: { "ASIC-001": { risk: 0.05, te: 0.92, tier: "HEALTHY" }, ... } },
-     { t: "T+2h", hash: "bbb...", devices: { "ASIC-001": { risk: 0.12, te: 0.88, tier: "HEALTHY" }, ... } },
-     { t: "T+3h", hash: "ccc...", devices: { "ASIC-001": { risk: 0.45, te: 0.75, tier: "WARNING" }, ... } },
+     { t: "2026-04-03", scoreHash: "aaa...", devices: { "ASIC-001": { risk: 0.05, te: 0.92, tier: "HEALTHY" }, ... } },
+     { t: "2026-04-04", scoreHash: "bbb...", devices: { "ASIC-001": { risk: 0.12, te: 0.88, tier: "HEALTHY" }, ... } },
+     { t: "2026-04-05", scoreHash: "ccc...", devices: { "ASIC-001": { risk: 0.45, te: 0.75, tier: "WARNING" }, ... } },
      ...
    ]
 
-5. Also download from the LATEST hash only:
-   GET /api/files/{latest_hash}/download?file_name=fleet_actions.json&task_name=optimize_fleet
-   GET /api/files/{latest_hash}/download?file_name=fleet_metadata.json&task_name=ingest_telemetry
-   GET /api/files/{latest_hash}/download?file_name=trend_analysis.json&task_name=analyze_trends
-   → These are only needed for the current cycle (not historical)
+5. Also download from the LATEST cycle's hashes:
+   GET /api/files/{latest_score_hash}/download?file_name=fleet_actions.json&task_name=optimize_fleet
+   GET /api/files/{latest_pp_hash}/download?file_name=fleet_metadata.json&task_name=ingest_telemetry
+   → fleet_metadata is static (same across cycles — download once)
+   → fleet_actions changes per cycle (commands depend on current risk state)
 ```
 
 ### Polling loop — detect new cycles
 
 ```javascript
-// Poll every 30s
+// Poll every 30s — single call gets all simulation runs
 setInterval(async () => {
-  const runs = await fetch("/api/runs?workflow_name=mdk.analyze&status=SUCCESS&limit=1");
-  const data = await runs.json();
-  const latest = data.runs?.[0];
+  const res = await fetch(`/api/executions?session=${sessionHash}`);
+  const { workflows } = await res.json();
 
-  if (latest && latest.workflow_hash !== lastKnownHash) {
-    // New inference cycle completed!
-    const snapshot = await downloadSnapshot(latest.workflow_hash);
-    timeline.push({ t: latest.end_time, hash: latest.workflow_hash, devices: snapshot });
-    lastKnownHash = latest.workflow_hash;
+  // Find completed score workflows (each = one cycle with downloadable data)
+  const scores = workflows
+    .filter(w => w.workflow_name === "mdk.score" && w.status === "SUCCESS")
+    .sort((a, b) => a.start_time.localeCompare(b.start_time));
 
-    // Also refresh current-cycle data (actions, trends)
-    refreshCurrentCycleData(latest.workflow_hash);
+  if (scores.length > timeline.length) {
+    // New cycle(s) completed — download new snapshots
+    for (const score of scores.slice(timeline.length)) {
+      const snapshot = await downloadSnapshot(score.workflow_hash);
 
-    // Re-render charts
+      // Get cutoff_timestamp from the corresponding pre_processing run
+      const pp = workflows.find(w =>
+        w.workflow_name === "mdk.pre_processing" &&
+        w.status === "SUCCESS" &&
+        w.parameters?.cutoff_timestamp &&
+        w.start_time < score.start_time  // pp runs before score in each cycle
+      );
+      const cutoff = pp?.parameters?.cutoff_timestamp;
+
+      timeline.push({
+        t: cutoff || score.end_time,
+        scoreHash: score.workflow_hash,
+        devices: snapshot,
+      });
+    }
     renderTimeline();
   }
 
-  // Also check if any pipeline is currently running
-  const running = await fetch("/api/runs?status=RUNNING&limit=1");
-  const runningData = await running.json();
-  if (runningData.runs?.length > 0) {
-    showPipelineSpinner(runningData.runs[0]);
+  // Show spinner if anything is still running
+  const running = workflows.filter(w => w.status === "RUNNING");
+  if (running.length > 0) {
+    showPipelineSpinner(running[running.length - 1]);
   }
 }, 30_000);
 ```
@@ -480,16 +532,31 @@ POST /api/proposals
 Content-Type: application/json
 
 {
-  "action": "set_clock",
+  "action": "fleet_underclock",
   "parameters": {
-    "device_id": "asic_aging_ASIC-001",
-    "value_ghz": 0.945,
-    "mos_method": "setFrequency"
+    "device_id": "ASIC-011",
+    "target_pct": 80,
+    "reason": "high temperature — risk score 0.87"
   },
   "session_hash": "<operator_session>",
-  "notify_url": "http://<dashboard>/webhook/approval"
+  "notify_url": "http://<dashboard>/webhook/approval",
+  "input_files": {
+    "fleet_risk_scores.json": "@<score_hash>.score_fleet:risk_scores",
+    "fleet_metadata.json": "@<preproc_hash>.ingest_telemetry:metadata"
+  }
 }
 ```
+
+**`input_files`** (optional) — Maps container filename → source reference. The engine resolves each reference, downloads the file (from Azure blob storage), and stages it into the task's working directory before execution. Supported reference formats:
+
+| Format | Example | Resolves via |
+|--------|---------|-------------|
+| Cross-workflow | `@cff4ee635e7489d1.score_fleet:risk_scores` | `task_variables` table lookup by workflow_hash + task + variable |
+| Direct URI | `azure://workflow-data-dev/outputs/.../file.json` | `FileStorage.retrieve_file()` directly |
+
+**Which hashes to use:** The dashboard gets workflow hashes from `GET /api/executions?session={simSessionHash}`. Use the `score` workflow hash for `score_fleet:risk_scores` and the `pre_processing` workflow hash for `ingest_telemetry:metadata`. These hashes change each simulation cycle — always use the latest completed cycle's hashes.
+
+**`fleet_actions.json` is optional** — `control_action.py` handles missing fleet actions gracefully (`None`). The analyze tasks in Pattern 5a don't register variables in `task_variables`, so `fleet_actions.json` is not available via cross-workflow reference. Omit it from `input_files`.
 
 **Response** (auto-approved or no gate):
 ```json
@@ -504,16 +571,124 @@ Content-Type: application/json
 }
 ```
 
-**Response** (needs human approval):
+**Response** (needs human approval — `human-confirm` tier, no matching learned policy):
+
+> **Critical: the POST blocks.** The HTTP connection stays open, polling internally every 2 seconds until the approval is resolved or the request times out. The frontend must handle this with two concurrent operations (see "Concurrency pattern" below).
+
 ```json
+HTTP 200 (eventually, after approval + execution):
 {
-  "status": "pending_approval",
-  "approval_id": "appr_xyz...",
-  "workflow_hash": "abc123..."
+  "status": "completed",
+  "workflow_hash": "abc123...",
+  "result": { "output": "...", "exit_code": 0 }
+}
+
+Or, if denied:
+{
+  "status": "denied",
+  "workflow_hash": "abc123...",
+  "reason": "Action 'fleet_underclock' was denied"
 }
 ```
 
+#### Concurrency pattern (blocking proposal + approval resolution)
+
+The proposal POST blocks until resolved. The frontend needs **two concurrent operations**:
+
+```
+User clicks "Execute Underclock"
+  │
+  ├─ Background: POST /api/proposals { action, parameters, session_hash }
+  │    → HTTP connection stays OPEN (30-120s)
+  │    → Returns only after approval resolution + container execution
+  │
+  ├─ Meanwhile: Poll GET /api/approvals?session={sessionHash}&status=pending
+  │    → Returns list of pending approvals (appears within ~1s)
+  │    → Show approval dialog for each pending item
+  │
+  ├─ User clicks Approve/Deny in the dialog
+  │    → POST /api/approvals/{approval_id}/resolve
+  │      { decision: "approved", remember: true, decided_by: "dashboard" }
+  │
+  └─ Background request unblocks → returns execution result
+       { status: "completed", result: { output: "...", exit_code: 0 } }
+```
+
+**Implementation:**
+```javascript
+const submitWithApproval = async (action, parameters) => {
+  // Start polling for pending approvals
+  startApprovalPolling();  // polls GET /api/approvals?session=...&status=pending every 2-3s
+
+  try {
+    // This request BLOCKS until approval + execution complete
+    const result = await submitProposal({
+      action,
+      parameters,
+      session_hash: sessionHash,
+    }, { timeout: 120000 }); // 2 min timeout — approval wait + container execution
+
+    if (result.status === 'completed') {
+      toast.success(`${action} executed successfully`);
+    } else if (result.status === 'denied') {
+      toast.warning(`Denied: ${result.reason}`);
+    }
+  } finally {
+    stopApprovalPolling();
+  }
+};
+```
+
+**Auto-approve shortcut:** `fleet_status_query` has `approval_tier: "auto-approve"` — no gate, POST returns immediately. Also, if a learned policy matches (from a previous `remember: true` approval), the gate is skipped and the POST returns immediately. Only `fleet_underclock`, `fleet_schedule_maintenance`, and `fleet_emergency_shutdown` require the approval dialog (unless a learned rule exists).
+
+#### Poll for pending approvals
+
+```
+GET /api/approvals?session={sessionHash}&status=pending
+```
+
+```json
+{
+  "approvals": [
+    {
+      "approval_id": "appr_abc123",
+      "template_name": "fleet_underclock",
+      "proposal": {
+        "action": "fleet_underclock",
+        "parameters": { "device_id": "ASIC-011", "target_pct": 80, "reason": "high temp" }
+      },
+      "session_hash": "dash_...",
+      "status": "pending",
+      "created_at": "2026-04-08T15:30:00Z"
+    }
+  ]
+}
+```
+
+Poll every 2-3s while a proposal is in-flight. Stop when no proposals are pending.
+
+#### Approval resolution dialog
+
+When a pending approval appears, show:
+
+```
+┌─────────────────────────────────────────────────┐
+│  ⚡ Approval Required                           │
+│                                                  │
+│  Action:    fleet_underclock                      │
+│  Device:    ASIC-011 (S19jPro)                   │
+│  Target:    80% clock speed                      │
+│  Reason:    high temp                            │
+│                                                  │
+│  ☐ Remember this decision                        │
+│    (auto-approve future fleet_underclock actions) │
+│                                                  │
+│  [ Deny ]                        [ Approve ✓ ]   │
+└─────────────────────────────────────────────────┘
+```
+
 #### Resolve pending approval
+
 ```
 POST /api/approvals/{approval_id}/resolve
 Content-Type: application/json
@@ -521,11 +696,10 @@ Content-Type: application/json
 {
   "decision": "approved",
   "reason": "Operator confirmed underclock for thermal safety",
-  "decided_by": "operator@site",
+  "decided_by": "dashboard",
   "remember": true,
   "match_pattern": {
-    "action": "set_clock",
-    "device_model": "S19XP"
+    "action": "fleet_underclock"
   }
 }
 ```
@@ -535,12 +709,12 @@ Content-Type: application/json
 {
   "approval_id": "appr_xyz...",
   "status": "approved",
-  "decided_by": "operator@site",
+  "decided_by": "dashboard",
   "learned_rule_id": "rule_123..."
 }
 ```
 
-> When `remember: true`, the system creates a **learned policy rule** so future identical commands auto-approve. This is the "system learns operator preferences" feature.
+> **`remember` belongs HERE, not on proposal submission.** The `POST /api/proposals` request has no `remember` field. The `remember` flag is exclusively on the approval resolution request. When `remember: true`, the backend creates a **learned policy rule** — future proposals matching the same action are auto-approved (gate skipped entirely).
 
 #### View learned policies
 ```
@@ -552,9 +726,9 @@ GET /api/policies?session_hash=<session>
   "rules": [
     {
       "rule_id": "rule_123...",
-      "template_name": "set_clock",
+      "template_name": "fleet_underclock",
       "scope": "allow",
-      "match_pattern": { "action": "set_clock", "device_model": "S19XP" },
+      "match_pattern": { "action": "fleet_underclock" },
       "created_at": "2026-04-06T...",
       "reason": "Operator confirmed underclock for thermal safety"
     }
@@ -568,6 +742,19 @@ DELETE /api/policies/{rule_id}
 ```
 
 **UI**: Show learned rules as a "policy dashboard" — list of auto-approve/deny rules the operator has taught the system, with a "Revoke" button for each. Over cycles, this list grows as the operator approves more command types.
+
+#### Catalog templates (what actions exist)
+
+The backend catalog defines exactly four fleet actions. The frontend should offer these as the available commands:
+
+| Template name | Description | Approval tier | Parameters | Rate limit |
+|---|---|---|---|---|
+| `fleet_status_query` | Read-only fleet health query | auto-approve | `query_type` (summary/device_detail/tier_breakdown/risk_ranking), `device_id` (optional) | 200/session |
+| `fleet_underclock` | Reduce device clock speed | human-confirm | `device_id`, `target_pct` (50-100), `reason` | 50/session |
+| `fleet_schedule_maintenance` | Schedule device maintenance | human-confirm | `device_id`, `maintenance_type`, `scheduled_date` | 20/session |
+| `fleet_emergency_shutdown` | Immediate device shutdown | human-confirm | `device_id`, `reason` | 5/session |
+
+The `fleet_actions.json` from the ML pipeline contains **recommendations** (tier, commands, rationale, cost projections). These are what the operator reviews to decide which proposal to submit. The ML recommends; the operator (or future AI agent) decides which action to actually propose.
 
 ---
 
@@ -690,6 +877,140 @@ GET /api/audit/stats                    → Global event count
 ```
 
 **UI**: Feature importance bar chart, anomaly type breakdown table, training stats card.
+
+---
+
+### Simulation Management (dev/demo only)
+
+**Purpose**: Browse, attach to, and switch between simulation sessions. This is a development and demo concern — in production there are no simulations or scenarios, just one continuous real-world feed.
+
+**Location in sidebar**: Below "New Simulation" button. These are meta-controls for managing test runs, not operator-facing features.
+
+```
+Sidebar:
+  Fleet Timeline
+  Command Approval
+  Pipeline Monitor
+  Audit Trail
+  Model Performance
+  ────────────────
+  New Simulation        ← triggers State 1 (scenario picker)
+  Simulation History    ← opens this view
+```
+
+**Data source**: `GET /api/runs?workflow_name=mdk.fleet_simulation&limit=20`
+
+Each `mdk.fleet_simulation` run = one simulation session. The response includes `session_hash`, `status`, `start_time`, `parameters` (scenario, training hash, interval).
+
+**UI**:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Simulation History                                              │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ ● ASIC Aging — 182/180 cycles          Apr 8, 03:46 AM │    │
+│  │   session: dash_fa5e8ac5-28e7...       [Attach]         │    │
+│  │   Status: SUCCESS  Duration: 1h 12m                     │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ ○ ASIC Aging — 29/180 cycles           Apr 8, 02:58 AM │    │
+│  │   session: dash_9b320ec6-a96c...       [Attach]         │    │
+│  │   Status: KILLED  Duration: 0h 45m                      │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ ◐ Cooling Failure — 12/60 cycles       Apr 8, 06:00 AM │    │
+│  │   session: dash_c4f12a01-...           [Attach]  LIVE   │    │
+│  │   Status: RUNNING  Duration: 5m (ongoing)               │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+│  [New Simulation]                                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Behavior**:
+
+| Action | What happens |
+|--------|-------------|
+| **Attach** (completed) | Sets `sessionHash`, navigates to **Fleet Timeline**. Timeline re-fetches all cycle data via `GET /api/executions?session=`. Day banner populates with all completed cycles. State 3 (Complete). |
+| **Attach** (running) | Same — navigates to **Fleet Timeline** in State 2 (Running). Polling resumes. New cycles appear live. |
+| **New Simulation** | Opens State 1 (scenario picker) in **Fleet Timeline**. Generates a fresh `sessionHash`. On trigger, Fleet Timeline transitions to State 2. |
+
+**Key principle**: Fleet Timeline is the single main view. It always shows data from the active `sessionHash`. "Simulation History" and "New Simulation" are just ways to change which session Fleet Timeline is displaying — there is no separate view for past simulations. This mirrors production, where Fleet Timeline shows the one real feed.
+
+**How "Attach" works**:
+
+```javascript
+function attachToSession(sessionHash, totalCycles) {
+  // 1. Store as the active session
+  window.sessionHash = sessionHash;
+  localStorage.setItem("activeSession", sessionHash);
+
+  // 2. Clear current timeline
+  timeline = [];
+
+  // 3. Re-run the init flow (same as page load)
+  //    GET /api/executions?session={sessionHash}
+  //    Download all score snapshots
+  //    Build timeline
+  await initFromSession(sessionHash);
+
+  // 4. Determine state (running vs complete)
+  const state = await determineState();
+  transitionTo(state);
+}
+```
+
+**Building the simulation list**:
+
+```javascript
+async function loadSimulationHistory() {
+  const res = await fetch("/api/runs?workflow_name=mdk.fleet_simulation&limit=20");
+  const { runs } = await res.json();
+
+  return runs.map(run => {
+    // Extract scenario name from parameters
+    const scenarioPath = run.parameters?.scenario_path || "";
+    const scenarioName = scenarioPath.split("/").pop()?.replace(".json", "") || "unknown";
+
+    // Get cycle count from this session
+    // (could also fetch /api/executions?session= but that's heavy for a list view)
+    return {
+      sessionHash: run.session_hash,
+      scenario: scenarioName,
+      status: run.status,           // RUNNING, SUCCESS, FAILED, KILLED
+      startTime: run.start_time,
+      endTime: run.end_time,
+      workflowHash: run.workflow_hash,
+    };
+  });
+}
+```
+
+> **Note**: Cycle count per session requires `GET /api/executions?session={hash}` and counting `mdk.score` SUCCESS entries. For the list view, show status + duration instead. Fetch cycle count only when the user clicks a session (or on attach).
+
+**On page load — session recovery**:
+
+```javascript
+// Check localStorage for a previous session
+const savedSession = localStorage.getItem("activeSession");
+if (savedSession) {
+  // Verify it still exists and has data
+  const res = await fetch(`/api/executions?session=${savedSession}`);
+  const { workflows } = await res.json();
+  const scores = workflows.filter(w => w.workflow_name === "mdk.score" && w.status === "SUCCESS");
+
+  if (scores.length > 0) {
+    await attachToSession(savedSession);
+    return;  // skip State 1
+  }
+}
+// No saved session or no data → State 1 (Setup)
+```
+
+This prevents the "29 cycles" problem — if the dashboard reloads or the user returns the next day, it re-attaches to the last active session automatically.
 
 ---
 
@@ -890,7 +1211,8 @@ Risk score color gradient: `green (0) → yellow (0.3) → orange (0.5) → red 
 | Endpoint | Purpose | Polling frequency |
 |----------|---------|-------------------|
 | `GET /api/health` | System health check | On load |
-| `GET /api/runs?limit=N&workflow_name=X&status=Y` | **Discover workflow hashes (timeline)** | Every 30s |
+| `GET /api/executions?session={hash}` | **All runs for this simulation session (ADR-002)** | Every 30s |
+| `GET /api/runs?limit=N&workflow_name=X&status=Y` | All runs across sessions (paginated) | Fallback |
 | `GET /api/files/{hash}/download?file_name=X&task_name=Y` | **Download JSON snapshot per cycle** | On new hash |
 | `GET /api/workflows/{name}/status?workflow_hash={hash}` | Workflow execution detail | On click / on new hash |
 | `GET /api/workflows/{name}/topology?workflow_hash={hash}` | DAG for visualization | On click |
@@ -934,11 +1256,15 @@ Risk score color gradient: `green (0) → yellow (0.3) → orange (0.5) → red 
 
 ### Scenario B: "Operator intervenes"
 1. Operator sees 3 CRITICAL devices at cycle 8
-2. Clicks into command queue → reviews AI rationale
-3. Approves underclock for all 3 with `remember: true`
-4. `POST /api/proposals` × 3 → commands execute
-5. Next cycles: if simulation modeled command effects, risk would drop (currently simulation doesn't close the loop — commands are logged but don't feed back into physics engine)
-6. Learned policy visible in policy dashboard → future similar commands auto-approve
+2. Clicks into Command Approval → reviews ML rationale + cost projections
+3. Clicks "Execute Underclock" for ASIC-011 → `POST /api/proposals` fires (blocks in background)
+4. Approval dialog appears (from polling `GET /api/approvals?session=...&status=pending`)
+5. Operator reviews parameters, checks "Remember this decision", clicks Approve
+6. `POST /api/approvals/{id}/resolve` with `remember: true` → learned rule created
+7. Blocked proposal unblocks → container executes → result shown in toast
+8. Repeats for next 2 devices — but now `fleet_underclock` has a learned rule, so proposals **auto-approve** (no dialog, immediate execution)
+9. Learned policy visible in policy panel → operator can revoke if needed
+10. Next cycles: commands are logged but simulation doesn't close the loop (commands don't feed back into physics engine — known limitation)
 
 ### Scenario C: "Watch pipeline in real time"
 1. During an active cycle, operator opens Pipeline Monitor
@@ -952,6 +1278,120 @@ Risk score color gradient: `green (0) → yellow (0.3) → orange (0.5) → red 
 3. Sees full chain: command_proposed → policy_checked → approval_pending → operator_approved → command_executed
 4. Clicks "Verify Integrity" → green checkmark (SHA-256 hash chain valid)
 5. Every decision is traceable — this is the compliance story
+
+---
+
+## Cycle Visual Dynamics
+
+This section specifies exactly what changes in the dashboard UI when each inference cycle completes. The frontend polls `GET /api/executions?session={hash}` every 30s. When a new `mdk.score` run appears with `status=SUCCESS`, the cycle is complete and the following updates fire.
+
+### Per-cycle update sequence
+
+When cycle N completes (new `mdk.score` SUCCESS detected):
+
+| # | Component | Update | Data source |
+|---|-----------|--------|-------------|
+| 1 | **Day banner** | New day button appears (appended right). Color = worst tier across all devices this cycle. If user is on "latest" (auto-advance), selection moves to the new day. | `tier` field per device in `fleet_risk_scores.json` |
+| 2 | **Tier evolution chart** | New data point appended to each stacked area series. X-axis extends by one tick. | Count of devices per tier this cycle |
+| 3 | **Risk heatmap** | New column appended (right edge). Each cell = one device's `mean_risk` this cycle. Heatmap scrolls/grows horizontally. | `mean_risk` per device |
+| 4 | **Fleet hashrate line** | New point appended. Shows sum of all devices' `hashrate_th` this cycle. | `latest_snapshot.hashrate_th` summed |
+| 5 | **Fleet avg TE line** | New point appended. Shows mean `te_score` across all devices. | `te_score` averaged |
+| 6 | **Snapshot cards** | Values update to reflect current cycle: tier counts, worst device, fleet hashrate, pending commands. | Current cycle data |
+| 7 | **Command activity log** | New rows appear if this cycle generated new commands (non-`hold_settings` actions). Commands from previous cycles remain in the log. | `fleet_actions.json` from the `mdk.score` hash |
+| 8 | **Device detail** (if open) | Risk-over-time and TE-over-time lines extend by one point. Telemetry sparklines update. Current gauges refresh. | Per-device data from this cycle |
+| 9 | **Pipeline monitor** (if open) | Previous cycle's DAG turns fully green/red. New cycle's DAG appears (or spinner if next cycle already running). | `GET /api/workflows/{name}/status` |
+| 10 | **Progress indicator** | "Cycle N of M" updates. Progress bar advances. | `N = timeline.length`, `M` from scenario metadata |
+
+### Day banner behavior per cycle
+
+```
+Cycle 1 completes:
+  ┌─────────┐
+  │  Day 1  │  ← appears, auto-selected, color from worst tier
+  │  [🟢]   │
+  └─────────┘
+
+Cycle 2 completes:
+  ┌─────────┬─────────┐
+  │  Day 1  │  Day 2  │  ← Day 2 appended, auto-selected (user was on latest)
+  │  [🟢]   │  [🟢]   │
+  └─────────┴─────────┘
+
+Cycle 5 completes (first anomaly):
+  ┌─────────┬─────────┬─────────┬─────────┬─────────┐
+  │  Day 1  │  Day 2  │  Day 3  │  Day 4  │  Day 5  │
+  │  [🟢]   │  [🟢]   │  [🟢]   │  [🟢]   │  [🟡]   │  ← yellow! first DEGRADED device
+  └─────────┴─────────┴─────────┴─────────┴─────────┘
+                                             ▲ auto-selected
+
+User clicks Day 3 (historical):
+  - Day 3 highlighted, all views show Day 3 data
+  - New cycles still append to the banner (Days 6, 7, ...)
+  - Auto-advance STOPS — user is browsing history
+  - "Jump to latest" button appears
+
+User clicks "Jump to latest":
+  - Selection jumps to newest day
+  - Auto-advance RESUMES
+```
+
+### Color assignment per day
+
+```javascript
+function dayColor(cycleDevices) {
+  const tiers = Object.values(cycleDevices).map(d => d.tier);
+  if (tiers.includes("CRITICAL")) return "#dc2626"; // red
+  if (tiers.includes("WARNING"))  return "#f59e0b"; // orange
+  if (tiers.includes("DEGRADED")) return "#eab308"; // yellow
+  return "#22c55e";                                  // green
+}
+```
+
+### What does NOT change per cycle
+
+| Component | Behavior |
+|-----------|----------|
+| Fleet metadata (device specs) | Static — downloaded once on init. Same across all cycles. |
+| Scenario info (sidebar) | Static — set at simulation start. Duration, device count, anomaly types. |
+| Approval pipeline config | Static — catalog templates, trust profiles don't change mid-simulation. |
+| Learned policies | Change only on operator action (approve with remember=true), not on cycle completion. |
+
+### First cycle vs subsequent cycles
+
+| Aspect | Cycle 1 | Cycles 2+ |
+|--------|---------|-----------|
+| Day banner | Created with 1 button | Button appended |
+| Charts | Initialized with single data point (no lines yet) | Lines begin to form |
+| Heatmap | Single column | Columns accumulate |
+| Command log | Usually empty (fleet healthy on Day 1) | Commands appear as anomalies develop |
+| Feature windows | Truncated (only 1 day of data) | Progressively fuller (7d window full by Cycle 7) |
+| Risk scores | Typically low (model sees limited history) | Increasingly accurate as history grows |
+
+### Transition between dashboard states
+
+```
+State 1 (Setup) → State 2 (Running):
+  Triggered when: user clicks "Start Simulation" and POST /api/workflows/mdk.fleet_simulation/trigger returns 200
+  Visual: setup sidebar slides out, main dashboard area appears with empty charts, spinner shows "Waiting for first cycle..."
+  Day banner: empty strip, no buttons yet
+
+State 2 (Running) → first cycle completes:
+  Visual: spinner replaced by actual data. Day 1 button appears in banner. All charts render their first data point.
+
+State 2 (Running) → State 3 (Complete):
+  Triggered when: mdk.fleet_simulation workflow status = SUCCESS (all cycles done)
+  Visual: progress indicator shows "Simulation Complete — N cycles". Auto-advance stops. Day banner fully populated.
+  All historical days remain clickable for post-mortem analysis.
+```
+
+### Polling frequency guidance
+
+| Phase | Recommended interval | Rationale |
+|-------|---------------------|-----------|
+| Waiting for first cycle | 10s | Fast feedback after triggering simulation |
+| Active simulation (cycles completing) | 30s | Each cycle takes ~20s; 30s catches every cycle within one poll |
+| Simulation complete | 60s or stop | No new data expected. Can stop polling entirely. |
+| User browsing history | Stop | All data already downloaded. Navigation is client-side only. |
 
 ---
 
@@ -971,9 +1411,28 @@ Risk score color gradient: `green (0) → yellow (0.3) → orange (0.5) → red 
 
 7. **Timestamps** — All timestamps are ISO 8601. Pipeline data uses `YYYY-MM-DD HH:MM:SS` format (no timezone — assumed UTC).
 
-8. **The proposal pipeline is the integration point** — When the operator clicks "Execute" on a command, it goes through `POST /api/proposals`. Catalog validation, rate limiting, learned policies, and approval gates all happen server-side. The frontend doesn't implement any of that logic.
+8. **The proposal pipeline is the integration point** — When the operator clicks "Execute" on a command, it goes through `POST /api/proposals`. Catalog validation, rate limiting, learned policies, and approval gates all happen server-side. The frontend doesn't implement any of that logic. **Important:** The `POST /api/proposals` request **blocks** (HTTP connection stays open) until the approval is resolved and the container finishes executing. For `human-confirm` actions, the frontend must poll `GET /api/approvals?session=...&status=pending` concurrently and show an approval dialog. See View 3 for the full concurrency pattern.
 
-9. **Session management** — Use a consistent `session_hash` per operator session. This groups proposals, learned policies, and audit events. Generate it client-side (e.g., SHA-256 of `dashboard:<random>`).
+    **`remember` placement:** The `remember` flag does NOT exist on `POST /api/proposals`. It belongs exclusively on `POST /api/approvals/{id}/resolve`. The proposal submits the action; the approval resolution is where the operator decides whether to teach the system to auto-approve similar actions in the future.
+
+9. **Session hash semantics (important)** — `session_hash` is a correlation primitive: it groups all workflows belonging to one logical simulation run. The engine stores it and queries by it but does not interpret it — the frontend decides when to create a new one vs reuse.
+
+    | Action | Session hash |
+    |--------|-------------|
+    | "Start Simulation" clicked | **Always generate new**: `dash_${crypto.randomUUID()}` |
+    | Page reload during a running sim | **Reuse** from `localStorage` (same logical run) |
+    | "Attach" to a past simulation | **Use that simulation's** existing hash |
+    | "Resume" / "Retry failed cycle" | **Reuse** (continuity — audit trail grows, cycles append) |
+
+    **Rule: every "Start Simulation" = new `sessionHash`.** Never reuse a session hash across separate simulation triggers. Reusing contaminates the data — cycles from different runs get mixed into the same `/api/executions?session=` response, and the dashboard can't tell them apart. The same hash is only reused for resuming or reloading the same logical run.
+
+    The `sessionHash` must appear in **two places** on the trigger request:
+    ```javascript
+    {
+      parameters: { session_hash: sessionHash },  // → CTX_SESSION_HASH in container → inner workflows
+      session_hash: sessionHash,                   // → outer workflow execution record
+    }
+    ```
 
 10. **Client-side state** — The timeline is built client-side by downloading one JSON per cycle and stitching them into arrays. No server-side aggregation needed. For 12-20 cycles this is ~2-5 MB total.
 
