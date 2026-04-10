@@ -1055,7 +1055,8 @@ def check_sr_ar(actions: dict) -> list[CheckResult]:
         "SR-AR-01", "Device commands with natural-language rationale",
         "PASS" if has_commands and has_rationale else "FAIL",
         f"All {len(action_list)} actions have commands ({total_commands} total) "
-        f"and rationale arrays.",
+        f"and rationale arrays. ML outputs are accessed by the AI agent via SafeClaw "
+        f"<code>fleet_status_query</code> through the Validance API (DR-POR-01).",
     ))
     results.append(CheckResult(
         "SR-AR-02", "Approval gate before execution", "DESIGN_VERIFIED",
@@ -1126,11 +1127,11 @@ def check_sr_co(repo_root: Path) -> list[CheckResult]:
         "<code>workflows/fleet_intelligence.py</code> defines 5 independent workflows "
         "chained via <code>continue_from</code>.",
     ))
-    sim_exists = (repo_root / "scripts" / "simulation_loop.py").exists()
+    sim_exists = (repo_root / "scripts" / "orchestrate_simulation.py").exists()
     results.append(CheckResult(
         "SR-CO-02", "Continuous simulation loop",
         "PASS" if sim_exists else "FAIL",
-        "<code>scripts/simulation_loop.py</code> orchestrates training &rarr; inference cycles.",
+        "<code>scripts/orchestrate_simulation.py</code> orchestrates growing-window inference cycles.",
     ))
 
     physics_exists = (repo_root / "scripts" / "physics_engine.py").exists()
@@ -1669,7 +1670,7 @@ def render_html(
     <span>Fleet: {metadata['fleet_size']} devices ({metadata['scored_devices_full']} scored)</span>
     <span>Requirements: <code>docs/requirements.md</code></span>
     <span>Pipeline: ingest &rarr; features &rarr; KPI &rarr; train &rarr; score &rarr;
-          trend &rarr; optimize &rarr; report</span>
+          trend &rarr; optimize &rarr; report &rarr; AI agent (SafeClaw &rarr; Validance)</span>
 </div>
 
 <div class="header-metrics">

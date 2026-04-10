@@ -2,7 +2,7 @@
 
 ## System Overview
 
-Four-layer architecture: **Tasks** (pure computation) are wrapped by **Scripts** (standalone execution), chained by **Orchestrators** (workflow sequencing), and declared as **Validance Pipelines** (engine-managed DAGs). Above the ML pipeline, an **AI Reasoning** layer proposes actions through a **Governance** gate.
+Four-layer architecture: **Tasks** (pure computation) are wrapped by **Scripts** (standalone execution), chained by **Orchestrators** (workflow sequencing), and declared as **Validance Pipelines** (engine-managed DAGs). Above the ML pipeline, an **AI Reasoning** layer reads pipeline data via SafeClaw and proposes actions through a **Governance** gate.
 
 ---
 
@@ -220,6 +220,16 @@ They poll for completion and pass output URIs between steps via `continue_from`.
 │  └────────────────────────────────────────────────────────────────────┘ │
 │                                                                         │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │ write_fleet_summary.py  (LEGACY — no longer in critical path)       │ │
+│  │                                                                    │ │
+│  │ Previously bridged ML output → AI agent via workspace files.      │ │
+│  │ Replaced by: orchestrator push + SafeClaw fleet_status_query.     │ │
+│  │ Agent now reads Validance artifacts directly — no filesystem       │ │
+│  │ bridge needed. Kept for standalone inference (orchestrate_         │ │
+│  │ inference.py) but not used in simulation flow.                    │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                         │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
 │  │ orchestrate_simulation.py  (growing-window, Pattern 1 / 5a)        │ │
 │  │                                                                    │ │
 │  │ Two-phase growing-window simulation (requires pre-trained model): │ │
@@ -228,6 +238,10 @@ They poll for completion and pass output URIs between steps via `continue_from`.
 │  │   Phase 2: For each cycle (1 per simulated day):                   │ │
 │  │     mdk.pre_processing(cutoff=day N) → mdk.score → mdk.analyze   │ │
 │  │     cutoff grows: each cycle sees all history [t=0 → t=cutoff]    │ │
+│  │                                                                    │ │
+│  │   Post-cycle: POST /hooks/agent → OpenClaw gateway (:19001)       │ │
+│  │     Pure orchestration — sends hashes + input_files refs only.     │ │
+│  │     Agent reads data via SafeClaw fleet_status_query.              │ │
 │  │                                                                    │ │
 │  │   Supports CLI (Pattern 1) and container (Pattern 5a) invocation  │ │
 │  │   Retry: 3 attempts (5s → 15s → 45s exponential backoff)          │ │
@@ -328,13 +342,41 @@ All tasks run in containers from `mdk-fleet-intelligence:latest` (or `fleet-cont
                         │   ↓ continue_from         │     [t=0 → t=cutoff]
                         │  mdk.score                │
                         │   ↓ continue_from         │
-                        │  mdk.analyze] × N cycles  │
-                        └─────────────────────────┘
-                        Requires pre-trained model.
+                        │  mdk.analyze              │
+                        │   ↓                       │
+                        │  POST /hooks/agent        │  ← pure orchestration:
+                        │  (hashes + input_files    │     just notify, no
+                        │   refs, session_hash)     │     data parsing
+                        │ ] × N cycles              │
+                        └────────────┬────────────┘
+                                     │ Requires pre-trained model.
+                                     │
+                                     ↓
+                        ┌─────────────────────────┐
+                        │ OpenClaw Agent (:19001)  │
+                        │                          │  Agent receives cycle
+                        │ Reads pipeline data via  │  notification with hashes,
+                        │ safeclaw():              │  then autonomously:
+                        │ · fleet_status_query     │
+                        │   (reads Validance       │  1. Queries fleet risk data
+                        │    artifacts directly)   │  2. Searches BTC price
+                        │ · web_search (BTC price) │  3. Reasons about economics
+                        │                          │  4. Proposes fleet actions
+                        │ Proposes via safeclaw(): │     with justification
+                        │ · fleet_underclock       │
+                        │ · fleet_schedule_maint   │  session_hash from notification
+                        │ · fleet_emergency_shut   │  → proposals land under same
+                        │                          │    session as pipeline data
+                        └────────────┬────────────┘
+                                     │
+                                     ↓
+                        Validance Governance Layer
+                        (approval gate, audit, policies)
 
   Each workflow step runs a Layer 1 task inside a container.
   Layer 0 (physics_engine) is imported by Layer 2 scripts.
   Layer 2 (generate_batch.py, simulation_loop.py --offline) run standalone.
+  AI agent reads Validance artifacts via SafeClaw — no filesystem bridge.
 ```
 
 ---
@@ -370,22 +412,31 @@ All tasks run in containers from `mdk-fleet-intelligence:latest` (or `fleet-cont
   │        ↓                 │     │  (tiers + safety flags + cmds)  │
   │  generate_report ────────│────→│  report.html                    │
   └──────────┬───────────────┘     └─────────────────────────────────┘
-             │ fleet_actions.json
-             │ (tiers, risk scores, trends, safety flags)
+             │ fleet_risk_scores.json + fleet_actions.json
+             │ (stored as Validance artifacts, accessible via API)
              ↓
-  ┌──────────────────────────┐
-  │  AI REASONING LAYER      │
-  │  (SafeClaw / LLM Agent)  │
-  │                          │
-  │  Reads:                  │
-  │  · ML output (tiers,     │
-  │    risk scores, trends)  │
-  │  · Market data           │
-  │  · Operator knowledge    │
-  │                          │
-  │  Proposes:               │
-  │  · Specific MOS commands │
-  │  · Rationale + context   │
+  ┌──────────────────────────┐    ┌────────────────────────────────┐
+  │  AI REASONING LAYER      │    │  Trigger: orchestrator push     │
+  │  (SafeClaw / LLM Agent)  │    │                                │
+  │                          │    │  POST /hooks/agent with:        │
+  │  Reads via SafeClaw:     │    │  · session_hash                 │
+  │  · fleet_status_query    │←───│  · input_files refs             │
+  │    (risk_ranking,        │    │    (@hash.task:artifact)        │
+  │     device_detail —      │    │                                │
+  │     reads Validance      │    │  Pure orchestration — no data   │
+  │     artifacts directly)  │    │  parsing, just hashes.          │
+  │  · web_search            │    │  Agent reads data via SafeClaw. │
+  │    (BTC price for        │    └────────────────────────────────┘
+  │     economic reasoning)  │
+  │  · HEARTBEAT.md          │    Dashboard (fleet-health-monitor)
+  │    (agent instructions)  │    shows both ML commands and AI
+  │                          │    proposals under same session.
+  │  Proposes via safeclaw():│
+  │  · fleet_underclock      │    session_hash override: agent
+  │  · fleet_schedule_maint  │    passes pipeline session_hash
+  │  · fleet_emergency_shut  │    from notification → proposals
+  │                          │    land alongside pipeline data.
+  │  caller_id: "safeclaw"   │
   └──────────┬───────────────┘
              │ proposed commands
              ↓
@@ -398,7 +449,8 @@ All tasks run in containers from `mdk-fleet-intelligence:latest` (or `fleet-cont
   │  · Learned Policies      │
   │    (rate limits, budget)  │
   │  · Audit Trail           │
-  │    (content-addressed)   │
+  │    (content-addressed,   │
+  │     caller_id attributed)│
   └──────────┬───────────────┘
              │ approved commands
              ↓
@@ -411,6 +463,10 @@ All tasks run in containers from `mdk-fleet-intelligence:latest` (or `fleet-cont
   │  · setFanControl         │
   │  · reboot                │
   └──────────────────────────┘
+
+  Key design principle: the AI agent accesses pipeline data through the
+  same channel it uses to propose actions (SafeClaw → Validance API).
+  No filesystem bridge — reads and writes go through one governed path.
 ```
 
 ---

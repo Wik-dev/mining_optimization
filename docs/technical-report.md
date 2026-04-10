@@ -2,7 +2,7 @@
 
 **Technical Report — MDK Assignment (Plan B, Tether)**
 
-Victor Wiklander | April 2026
+Victor Wiklander | April 2026 | Last updated: 2026-04-10
 
 ---
 
@@ -124,31 +124,40 @@ The pipeline is split into composable single-concern workflows chained via `cont
 
 ### 3.2 AI Reasoning Layer (SafeClaw)
 
-The ML layer outputs tier classifications and safety flags — deterministic, auditable observations. The *action decisions* (what to actually do about a WARNING or CRITICAL device) are handled by the AI reasoning agent:
+The ML layer outputs tier classifications and safety flags — deterministic, auditable observations. The *action decisions* (what to actually do about a WARNING or CRITICAL device) are handled by a separate AI reasoning agent via a push-based architecture:
 
 ```
-ML Output (fleet_actions.json)
-  → SafeClaw reads: tiers, risk scores, trend context, MOS alert codes
-  → SafeClaw reads: real-time market data (BTC price, energy costs, difficulty)
-  → SafeClaw reads: operator knowledge base (maintenance history, site constraints)
-  → SafeClaw proposes: specific MOS commands with rationale
-  → Validance approval gate: human review before execution
+Orchestrator (post-inference cycle)
+  → POST /hooks/agent: "Cycle N complete, session_hash, input_files refs"
+  → AI agent wakes up
+  → safeclaw({ action: "fleet_status_query", params: { query_type: "risk_ranking",
+      session_hash: "dash_...", input_files: { "fleet_risk_scores.json": "@hash.score_fleet:risk_scores" }}})
+  → Validance resolves input_files → agent reads ML outputs via API
+  → safeclaw({ action: "web_search", params: { query: "Bitcoin BTC price USD today" }})
+  → Agent composes economic reasoning per flagged device
+  → safeclaw({ action: "fleet_underclock", params: { device_id: "ASIC-009",
+      target_pct: 80, reason: "BTC $72k. Efficiency 30% worse than nominal..." }})
+  → Validance approval gate → operator approves/denies → execution
 ```
+
+The agent never reads files directly. All data flows through the same SafeClaw → Validance API channel used for action proposals. `input_files` references (content-addressed URIs like `@hash.task:output`) let Validance resolve pipeline outputs into the query container at execution time. The `session_hash` passed by the agent matches the pipeline session, so proposals appear alongside pipeline data in the dashboard — zero configuration.
 
 This separation is intentional:
 - **ML layer**: "device X is CRITICAL with thermal degradation" (deterministic, reproducible)
-- **AI agent**: "for device X, reduce clock to 70% because BTC price is low and maintenance crew is available Thursday" (contextual, requires reasoning)
-- **Approval gate**: human confirms or rejects (auditable, traceable)
+- **AI agent**: "for device X, reduce clock to 80% because BTC at $72k — losing 28 TH/s costs $0.71/day but saves $1.40/day in wasted power, net benefit +$0.69/day plus reduced replacement risk" (contextual, requires economic reasoning)
+- **Approval gate**: operator confirms or rejects with optional learned policy (auditable, traceable)
 
 ### 3.3 Governance Layer (Validance)
 
-Every action flows through Validance's execution engine:
-- Content-addressed execution chain (SHA-256 workflow hashes)
-- Approval gates with multi-voter support
-- Learned policy rules (rate limits, budget enforcement)
-- Full audit trail per proposal
+Every action — both ML pipeline tasks and AI agent proposals — flows through Validance's execution engine:
 
-Each task runs in a Docker container. Inputs and outputs pass through a shared working directory using Parquet files (telemetry, features, KPI timeseries), JSON (metadata, risk scores, controller actions), and a joblib model artifact.
+- **Content-addressed execution chain** — SHA-256 workflow hashes link every task output to its inputs, code, and parameters. Model artifacts are resolved via `continue_from` deep context, not filesystem paths.
+- **Trust profiles** — three tiers (conservative, standard, power-user) control which actions auto-approve and which require human confirmation. Read-only commands (`fleet_status_query`, `web_search`) auto-approve in standard profile; destructive commands (`fleet_underclock`, `fleet_emergency_shutdown`) always require human confirmation.
+- **Learned policies** — operators can create standing rules for recurring action patterns (e.g., "always approve underclock to 80% for this device model when risk > 0.9"), reducing approval fatigue while maintaining auditability.
+- **Session unification** — the AI agent passes the pipeline's `session_hash` when submitting proposals, so agent actions and pipeline data appear under a single session in the dashboard. No separate configuration needed.
+- **Full audit trail** — every proposal is logged with parameters, approval decision, execution result, and timing.
+
+Each pipeline task runs in a Docker container. Inputs and outputs pass through a shared working directory using Parquet files (telemetry, features, KPI timeseries), JSON (metadata, risk scores, controller actions), and a joblib model artifact. Agent proposals execute in the same container infrastructure — `fleet_status_query` reads pipeline outputs inside a container, `fleet_underclock` would issue MOS RPC calls from a container.
 
 ## 4. Data Pipeline
 
@@ -304,14 +313,56 @@ An autonomous optimization agent controlling mining hardware introduces real ris
 
 **Adversarial robustness** — fleet-relative z-score features provide natural robustness: a single device reporting anomalous readings will diverge from fleet peers, though fleet-wide sensor calibration drift would not be detected.
 
-## 7. Future Work
+## 7. Growing-Window Simulation & End-to-End Demonstration
+
+### 7.1 Simulation Architecture
+
+The system supports continuous simulation via a growing-window inference loop (`scripts/orchestrate_simulation.py`). This mirrors real-world telemetry accumulation:
+
+**Phase 1 — Data generation**: The physics engine generates all scenario data upfront as a single time series covering the full scenario duration (e.g., 90 days for `summer_heatwave`).
+
+**Phase 2 — Growing-window inference**: Each cycle advances a cutoff timestamp by the configured interval (default: 1 day). The pre-processing task ingests all data up to the cutoff, so rolling windows (30m, 1h, 12h, 24h, 7d) are always fully populated — matching the feature distribution the model was trained on. This avoids the truncated-window problem that would occur with batch-only inference.
+
+```
+Cycle 1: [day 0 ──── day 1]           → score → analyze → agent
+Cycle 2: [day 0 ──────── day 2]       → score → analyze → agent
+Cycle 3: [day 0 ──────────── day 3]   → score → analyze → agent
+  ...
+Cycle N: [day 0 ─────────────── day N] → score → analyze → agent
+```
+
+After each inference cycle, if the gateway URL is configured, the orchestrator pushes a notification to the AI agent with the pipeline session hash and `input_files` references. The agent then follows its reasoning protocol to propose fleet actions.
+
+### 7.2 End-to-End Flow (Demonstrated)
+
+The full pipeline was demonstrated end-to-end on April 10, 2026, using the `summer_heatwave` scenario (12 devices, 90 days, thermal degradation + dust fouling + thermal paste degradation):
+
+1. **Pipeline execution** — `orchestrate_simulation.py` runs Phase 1 (data generation) then iterates Phase 2 cycles. Each cycle triggers `mdk.pre_processing` → `mdk.score` → `mdk.analyze` inside Docker containers via Validance.
+
+2. **Agent activation** — After each cycle, the orchestrator pushes to the agent via `POST /hooks/agent`. The agent reads fleet risk scores via `fleet_status_query` and current BTC price via `web_search`.
+
+3. **Economic reasoning** — For each flagged device, the agent composes a cost-benefit analysis incorporating: current BTC price and mining revenue, device-specific efficiency loss vs nominal, estimated power savings from underclocking, hardware replacement cost and lifetime risk. Example reasoning from a live proposal:
+
+   > *"BTC $72,119. Device at 68°C, efficiency 30% worse than nominal (27.6 vs 21.3 J/TH). Underclocking to 80% loses ~28 TH/s = $0.71/day revenue, but saves ~$1.40/day in wasted power + extends hardware life. Net benefit: +$0.69/day + reduced replacement risk ($5k S19jPro)."*
+
+4. **Proposal submission** — The agent submits `fleet_underclock` or `fleet_schedule_maintenance` proposals via SafeClaw, using the pipeline's session hash so proposals appear in the unified dashboard.
+
+5. **Operator approval** — Proposals appear in the dashboard with status badges, reasoning text, and approve/deny buttons. The operator reviews the AI's economic justification and approves or rejects.
+
+6. **Execution** — Approved proposals execute inside Docker containers via Validance. The execution result (success/failure, output) is recorded in the audit trail.
+
+This demonstrates the full two-layer architecture: deterministic ML detection feeding contextual AI reasoning, with human-in-the-loop governance at every step.
+
+## 8. Future Work
 
 - **Real data validation** — the synthetic dataset validates pipeline architecture and model design, but real-world failures are messier (co-occurring modes, sensor drift, non-stationary baselines). The weak `dust_fouling` detection signal indicates where real data and better feature engineering are most needed.
-- **SafeClaw fleet integration** — connect the ML output to SafeClaw's fleet management templates, enabling the AI agent to propose MOS commands informed by real-time market data, maintenance schedules, and operator preferences.
-- **Streaming inference** — move from 24-hour batch scoring to 5-minute streaming inference with immediate tier reclassification on state changes.
+- **MOS RPC integration** — the `fleet_underclock` template currently executes in a container that logs the intended MOS command. Connecting to the actual MOS API (`setFrequency`, `setMode`) requires TLS client certificates and the MOS gateway endpoint — a deployment configuration step, not an architecture change.
+- **Streaming inference** — move from 24-hour batch scoring to 5-minute streaming inference with immediate tier reclassification on state changes. The growing-window architecture already handles accumulating history; the bottleneck is inference cycle time (~2 min per cycle), not architecture.
 - **Incremental features** — compute rolling features incrementally over a sliding window rather than recomputing on the full history, reducing O(n) feature engineering to O(1) per tick.
+- **Approval UX** — Telegram inline buttons for approve/deny (currently text-based `/sc-approve` commands). Session-based deduplication to prevent the agent from re-proposing actions already pending approval.
 
 ---
 
 **Repository**: `mining_optimization/`
-**Workflows**: `mdk.pre_processing`, `mdk.train`, `mdk.score`, `mdk.analyze`, `mdk.generate_corpus`
+**Workflows**: `mdk.pre_processing`, `mdk.train`, `mdk.score`, `mdk.analyze`, `mdk.generate_corpus`, `mdk.generate_batch`, `mdk.fleet_simulation`
+**Orchestrators**: `orchestrate_training.py`, `orchestrate_inference.py`, `orchestrate_simulation.py`
