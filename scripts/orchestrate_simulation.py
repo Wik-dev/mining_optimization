@@ -38,9 +38,17 @@ Usage (CLI, Pattern 1):
         --training-hash 636e10ec2ad88f42 \\
         --interval-days 7
 
+    # With AI agent push (notifies OpenClaw when devices are flagged):
+    python scripts/orchestrate_simulation.py \\
+        --scenario data/scenarios/summer_heatwave.json \\
+        --training-hash fa6d414fd91dd1ab \\
+        --gateway-url http://172.18.0.1:19001 \\
+        --gateway-token fleet-hook-2026
+
 Usage (Pattern 5a — from mdk.fleet_simulation container):
     Reads CTX_* env vars when CLI args are absent:
       CTX_SCENARIO_PATH, CTX_TRAINING_HASH, CTX_API_URL, CTX_INTERVAL_DAYS
+      CTX_GATEWAY_URL, CTX_GATEWAY_TOKEN (for AI agent push)
 
 Author: Wiktor (MDK assignment, April 2026)
 """
@@ -236,10 +244,40 @@ def get_variable(session: requests.Session, api_url: str,
     return None
 
 
+# ── Agent push helpers ────────────────────────────────────────────────────────
+
+def _notify_agent(gateway_url: str, gateway_token: str, message: str) -> bool:
+    """POST to OpenClaw /hooks/agent to trigger AI reasoning on flagged devices.
+
+    Uses the gateway's webhook endpoint (added in OpenClaw 2026.4.x) to inject
+    a message into the active agent session. The agent then follows HEARTBEAT.md
+    to propose fleet actions via SafeClaw.
+    """
+    url = f"{gateway_url.rstrip('/')}/hooks/agent"
+    try:
+        resp = requests.post(
+            url,
+            json={"message": message},
+            headers={"Authorization": f"Bearer {gateway_token}"},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            logger.info("  Agent notified (runId=%s)", data.get("runId", "?"))
+            return True
+        else:
+            logger.warning("  Agent push failed: HTTP %d — %s",
+                           resp.status_code, resp.text[:200])
+    except (ConnectionError, OSError) as e:
+        logger.warning("  Agent push failed: %s", e)
+    return False
+
+
 # ── Main orchestration ───────────────────────────────────────────────────────
 
 def run_simulation(api_url: str, scenario_path: str, interval_days: int,
-                   output_dir: str, training_hash: str) -> SimulationMetrics:
+                   output_dir: str, training_hash: str,
+                   gateway_url: str = "", gateway_token: str = "") -> SimulationMetrics:
     """Execute growing-window simulation: generate all data, then infer per day.
 
     Phase 1: Generate all scenario data in one shot (single mdk.generate_batch),
@@ -261,7 +299,10 @@ def run_simulation(api_url: str, scenario_path: str, interval_days: int,
     duration_days = scenario["duration_days"]
     total_cycles = math.ceil(duration_days / interval_days)
 
-    session_hash = hashlib.sha256(
+    # Inherit the outer workflow's session_hash when triggered via Pattern 5a
+    # (dashboard passes it as a trigger parameter → CTX_SESSION_HASH).
+    # CLI fallback: generate a unique session hash for standalone usage.
+    session_hash = os.environ.get("CTX_SESSION_HASH") or hashlib.sha256(
         f"simulation_{os.path.basename(scenario_path)}_{datetime.now().isoformat()}".encode()
     ).hexdigest()[:16]
 
@@ -404,6 +445,22 @@ def run_simulation(api_url: str, scenario_path: str, interval_days: int,
             prev_hash = analyze_hash
             consecutive_failures = 0
 
+            # ── AI agent push (post-cycle) ────────────────────────────
+            # Notify the agent that new pipeline data is available.
+            # The agent reads fleet data via fleet_status_query through
+            # SafeClaw — no file parsing here. Pure orchestration.
+            if gateway_url and gateway_token:
+                msg = (
+                    f"Simulation cycle {cycle + 1}/{total_cycles} completed "
+                    f"(cutoff: {cutoff_str}).\n"
+                    f"session_hash: {session_hash}\n"
+                    f"input_files:\n"
+                    f"  fleet_risk_scores.json: @{score_hash}.score_fleet:risk_scores\n"
+                    f"  fleet_metadata.json: @{pp_hash}.ingest_telemetry:metadata\n"
+                    f"Follow HEARTBEAT.md."
+                )
+                _notify_agent(gateway_url, gateway_token, msg)
+
         except Exception as e:
             result.error = str(e)
             consecutive_failures += 1
@@ -470,6 +527,14 @@ def main():
     parser.add_argument("--api-url", type=str,
                         default=os.environ.get("CTX_API_URL", "http://localhost:8001"),
                         help="Validance API URL (default: http://localhost:8001)")
+    parser.add_argument("--gateway-url", type=str,
+                        default=os.environ.get("CTX_GATEWAY_URL", ""),
+                        help="OpenClaw gateway URL for AI agent push "
+                             "(e.g. http://172.18.0.1:19001). "
+                             "When set, notifies the agent after cycles with flagged devices.")
+    parser.add_argument("--gateway-token", type=str,
+                        default=os.environ.get("CTX_GATEWAY_TOKEN", ""),
+                        help="OpenClaw gateway hooks auth token (CTX_GATEWAY_TOKEN)")
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Directory for simulation_metrics.json "
                              "(default: data/simulation/ or CWD in container)")
@@ -500,12 +565,18 @@ def main():
                 os.path.dirname(os.path.abspath(__file__)),
                 "..", "data", "simulation")
 
+    if args.gateway_url and not args.gateway_token:
+        logger.warning("--gateway-url set but --gateway-token missing — agent push disabled")
+        args.gateway_url = ""
+
     metrics = run_simulation(
         api_url=args.api_url,
         scenario_path=args.scenario,
         interval_days=args.interval_days,
         output_dir=args.output_dir,
         training_hash=args.training_hash,
+        gateway_url=args.gateway_url,
+        gateway_token=args.gateway_token,
     )
 
     print(f"\nSimulation complete:")

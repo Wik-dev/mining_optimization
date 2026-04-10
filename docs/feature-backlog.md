@@ -1,0 +1,15 @@
+# Feature Backlog — Mining Optimization
+
+**Purpose**: Record potential features and improvements for the fleet intelligence pipeline and its OpenClaw/SafeClaw integration. Risks and bugs go elsewhere; this is for things that don't exist yet but could.
+
+Everything starts as **nice to have**. Entries are promoted to **must have** when validated by testing or user feedback.
+
+**Created**: 2026-04-09
+**Last updated**: 2026-04-09 (F-001 added — Telegram approval buttons)
+
+---
+
+| ID | Feature | Category | Origin | Complexity | Status | Identified | Notes |
+|----|---------|----------|--------|------------|--------|------------|-------|
+| F-001 | Telegram inline approval buttons for SafeClaw proposals | Approval UX | Session testing (heartbeat E2E) | Medium | nice to have | 2026-04-09 | Currently SafeClaw returns text with `/sc-approve <uuid> allow-once` instructions. The paysafe project (`safe-pay-agent/telegram-bot/`) used Grammy `InlineKeyboard` with Approve/Deny/Remember buttons via callback queries. For the mining fleet (OpenClaw integration), the approach is to use SafeClaw's `message_sending` hook to intercept outgoing messages containing `/sc-approve` patterns and inject `channelData.telegram.buttons` with inline keyboard buttons. OpenClaw's Telegram delivery already supports `ReplyPayload.channelData.telegram.buttons` via `buildInlineKeyboard()` in `delivery.replies.ts`. A callback query handler on the OpenClaw side would then resolve the approval via the existing `safeclaw.approval.resolve` gateway method. |
+| F-002 | Heartbeat deduplication by session_hash | Heartbeat | Session testing (repeated proposals) | Low | nice to have | 2026-04-09 | When fleet_summary.json hasn't changed (same `session_hash` + `generated_at`), the heartbeat should reply HEARTBEAT_OK instead of re-proposing the same actions. Add instruction to HEARTBEAT.md: "If `session_hash` matches your last assessment, reply HEARTBEAT_OK (no new data)." |

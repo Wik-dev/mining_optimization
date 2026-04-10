@@ -26,6 +26,12 @@ Trigger parameters (→ CTX_* env vars via ADR-005 §2.3):
                      artifacts resolved via deep context chain, not explicit paths)
   api_url          → CTX_API_URL        (engine REST API for inner triggers)
   interval_days    → CTX_INTERVAL_DAYS  (simulated days per cycle, default: 1)
+  session_hash     → CTX_SESSION_HASH   (propagated to inner workflows so all runs
+                     share one session — enables GET /api/executions?session=)
+  gateway_url      → CTX_GATEWAY_URL   (optional: OpenClaw gateway for AI agent push,
+                     e.g. http://172.18.0.1:19001. When set, the orchestrator POSTs
+                     to /hooks/agent after cycles with flagged devices.)
+  gateway_token    → CTX_GATEWAY_TOKEN (optional: hooks auth token for the gateway)
 
 Author: Wiktor (MDK assignment, April 2026)
 """

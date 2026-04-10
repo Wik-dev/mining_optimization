@@ -13,6 +13,12 @@ After completion, pipeline outputs in /work/ are available for SafeClaw fleet
 queries (fleet_risk_scores.json, fleet_actions.json, trend_analysis.json,
 report.html).
 
+Optional post-inference steps (Pattern A push):
+  Step 4: Write fleet_summary.json to OpenClaw workspace (--workspace)
+  Step 5: Notify OpenClaw agent via CLI (--openclaw-bin). Agent reads
+          fleet_summary.json, reasons, proposes actions via safeclaw(). Response
+          returned programmatically AND delivered to Telegram.
+
 Usage:
     python scripts/orchestrate_inference.py \\
         --api-url http://localhost:8001 \\
@@ -35,9 +41,12 @@ import argparse
 import hashlib
 import json
 import logging
+import os
+import subprocess
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 import requests
 
@@ -89,6 +98,9 @@ def poll_completion(session: requests.Session, api_url: str,
     raise TimeoutError(f"Workflow {workflow_name} ({workflow_hash}) did not complete within {POLL_TIMEOUT}s")
 
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+
+
 def main():
     parser = argparse.ArgumentParser(description="Inference orchestrator (Pattern 1 chain)")
     parser.add_argument("--api-url", default="http://localhost:8001",
@@ -100,6 +112,12 @@ def main():
     parser.add_argument("--training-hash", required=True,
                         help="Workflow hash of the training run. Model artifacts "
                              "resolved via deep context (continue_from chain).")
+    parser.add_argument("--workspace",
+                        help="OpenClaw workspace path for fleet summary output "
+                             "(default: OPENCLAW_WORKSPACE env var)")
+    parser.add_argument("--openclaw-bin",
+                        help="Path to openclaw CLI binary "
+                             "(default: OPENCLAW_BIN env var, or 'openclaw')")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -160,6 +178,77 @@ def main():
     logger.info("  Triggered: %s", wf_hash)
     poll_completion(session, args.api_url, "mdk.analyze", wf_hash)
     logger.info("  Completed")
+
+    # ── Step 4 (optional): Write fleet summary to OpenClaw workspace ──────
+    workspace = getattr(args, 'workspace', None) or os.environ.get('OPENCLAW_WORKSPACE')
+    if workspace:
+        logger.info("Step 4: Writing fleet summary to %s", workspace)
+        # Deploy HEARTBEAT.md on first run (idempotent — overwrites if present)
+        heartbeat_path = Path(workspace) / "HEARTBEAT.md"
+        deploy_flag = [] if heartbeat_path.exists() else ["--deploy-heartbeat"]
+        summary_result = subprocess.run([
+            sys.executable, str(SCRIPTS_DIR / "write_fleet_summary.py"),
+            "--analyze-hash", wf_hash,
+            "--session-hash", session_hash,
+            "--workspace", workspace,
+            "--api-url", args.api_url,
+        ] + deploy_flag, capture_output=True, text=True)
+        if summary_result.returncode != 0:
+            logger.warning("Fleet summary write failed: %s", summary_result.stderr)
+        else:
+            logger.info("Fleet summary written to %s/fleet_summary.json", workspace)
+    else:
+        logger.info("Skipping fleet summary (no --workspace or OPENCLAW_WORKSPACE configured)")
+
+    # ── Step 5 (optional): Notify OpenClaw agent — Pattern A push ────────
+    # Uses `openclaw agent` CLI to send a message through the gateway's
+    # WebSocket RPC. The agent processes the message, reads fleet_summary.json,
+    # reasons about flagged devices, and may call safeclaw() to propose actions.
+    # Response returned programmatically AND delivered to Telegram (--deliver).
+    # Heartbeat (Pattern B) runs independently on its own timer.
+    openclaw_bin = args.openclaw_bin or os.environ.get('OPENCLAW_BIN', 'openclaw')
+    if workspace:
+        logger.info("Step 5: Notifying OpenClaw agent via CLI (%s)", openclaw_bin)
+        message = (
+            f"[{datetime.utcnow().strftime('%a %Y-%m-%d %H:%M UTC')}] "
+            "Fleet inference pipeline complete. "
+            f"New fleet_summary.json written (session {session_hash}). "
+            "Read it and act on any flagged devices per HEARTBEAT.md instructions."
+        )
+        # Build CLI command. --dev flag uses the dev profile (port 19001).
+        # --deliver sends the response to the configured Telegram channel.
+        # --agent main targets the main agent session.
+        # --json returns structured output for programmatic consumption.
+        cmd = [
+            openclaw_bin, "--dev", "agent",
+            "--agent", "main",
+            "--message", message,
+            "--deliver",
+            "--json",
+            "--timeout", "180",
+        ]
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=200,
+            )
+            if result.returncode == 0:
+                try:
+                    data = json.loads(result.stdout)
+                    status = data.get("status", "unknown")
+                    logger.info("  OpenClaw agent responded: %s", status)
+                except json.JSONDecodeError:
+                    logger.info("  OpenClaw agent responded (non-JSON): %s",
+                                result.stdout[:200].strip())
+            else:
+                logger.warning("  OpenClaw agent CLI failed (exit %d): %s",
+                               result.returncode, result.stderr[:200].strip())
+        except subprocess.TimeoutExpired:
+            logger.warning("  OpenClaw agent CLI timed out (agent may still be processing)")
+        except FileNotFoundError:
+            logger.warning("  openclaw binary not found at '%s'. "
+                           "Set --openclaw-bin or OPENCLAW_BIN.", openclaw_bin)
+    else:
+        logger.info("Skipping OpenClaw push (no --workspace configured)")
 
     # ── Summary ────────────────────────────────────────────────────────────
     print(f"\nInference complete:")
