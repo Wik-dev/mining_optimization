@@ -1251,6 +1251,12 @@ def render_html(
     lowest_anomalous = sorted(
         [d for d in dr_sorted if d["ground_truth"]],
         key=lambda x: x["mean_risk"])[:3]
+    # Guard: if no anomalous/healthy devices, use placeholder to avoid IndexError
+    _placeholder = {"device_id": "N/A", "mean_risk": 0.0, "scenario": "N/A"}
+    if not highest_healthy:
+        highest_healthy = [_placeholder]
+    if not lowest_anomalous:
+        lowest_anomalous = [_placeholder]
 
     sm = fleet_detection["sample_metrics"]
     cm = fleet_detection["confusion"]

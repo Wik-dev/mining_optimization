@@ -1,77 +1,223 @@
 # Mining Optimization
 
-**Plan B Assignment by Tether** — AI-driven optimization for Bitcoin mining operations.
+AI-driven fleet intelligence for Bitcoin mining operations.
 
-## Objective
+Supervised ML detection + LLM reasoning agent + human-in-the-loop governance. Detects hardware degradation days before failure, proposes cost-justified corrective actions, and enforces operator approval before anything touches hardware.
 
-Design and prototype intelligent solutions for two core mining challenges:
+![Fleet control dashboard — tier evolution, hashrate, TE score, risk heatmap](Screenshot_Fleet_Control.png)
 
-1. **Chip-level operation optimization** — find the optimal operating point (frequency, voltage, temperature, power consumption, hashrate) for each ASIC chip, adapting in real-time to environmental conditions (weather, cooling capacity, energy availability).
+![Per-device commands with tier classification and safety overrides](Screenshot_Command_details.png)
 
-2. **Predictive maintenance** — detect degradation patterns early and predict chip/machine failures before they occur, reducing repair costs and downtime.
+A sample pipeline report (summer_heatwave scenario, final cycle) is available at [`docs/sample-report.html`](docs/sample-report.html).
 
-This is a design-thinking exploration — the focus is on problem framing, data structuring, and solution architecture rather than a production-ready product.
+---
 
-## Pipeline Architecture
+## Quick Start
 
-7-task DAG executed through a workflow engine with containerized tasks, deterministic re-execution, and full audit trail:
+### Prerequisites
+
+- Python 3.11+
+- Docker (for containerized execution via the workflow engine)
+
+### Install dependencies (local development)
+
+```bash
+pip install pandas numpy scikit-learn xgboost matplotlib pyarrow scipy joblib requests pytest
+```
+
+### Generate synthetic data
+
+```bash
+# Single scenario (baseline, 10 devices, 30 days)
+python scripts/generate_training_corpus.py --scenario baseline
+
+# Full training corpus (~1.6M rows, 5 scenarios)
+python scripts/generate_training_corpus.py --all
+```
+
+### Run the pipeline locally (no Docker)
+
+Each task is a standalone Python script that reads from and writes to the current directory:
+
+```bash
+cd data/pipeline
+
+# Shared prefix: ingest → features → KPI
+python ../../tasks/ingest.py
+python ../../tasks/features.py
+python ../../tasks/kpi.py
+
+# Training path
+python ../../tasks/train_model.py
+
+# Inference path (requires trained model)
+python ../../tasks/score.py
+
+# Analysis
+python ../../tasks/trend_analysis.py
+python ../../tasks/optimize.py
+python ../../tasks/report.py          # → report.html
+```
+
+### Run via workflow engine (containerized)
+
+```bash
+# Register workflows with the Validance API
+PYTHONPATH=/path/to/validance-workflow python scripts/register_validance_workflows.py
+
+# Training chain: generate_corpus (all scenarios) → pre_processing → train
+python scripts/orchestrate_training.py --all
+
+# Inference chain: pre_processing → score → analyze
+# --training-hash is the workflow hash from the training run above.
+# The engine resolves model artifacts (anomaly_model.joblib, regression_model_v*.joblib)
+# from that hash via the continue_from chain — no filesystem paths needed.
+python scripts/orchestrate_inference.py --training-hash 09605d5baa372954
+
+# Growing-window simulation (90 cycles)
+python scripts/orchestrate_simulation.py --scenario summer_heatwave --training-hash 09605d5baa372954
+```
+
+### Run tests
+
+```bash
+pytest tests/ -v
+```
+
+The test suite (76 tests) generates a mini dataset (5 devices, 14 days), runs the full 8-task pipeline, and validates outputs:
+
+| Test file | Tests | Coverage |
+|-----------|-------|----------|
+| `test_pipeline_integration.py` | 28 | End-to-end pipeline: data shapes, feature counts, model outputs, report generation |
+| `test_trend_analysis.py` | 40 | Trend unit tests: OLS slopes, CUSUM detection, projected crossings, edge cases |
+| `test_phase6_tasks.py` | 8 | Fleet control: tier classification, safety overrides, action generation |
+
+---
+
+## Project Structure
 
 ```
-Telemetry → Features → KPI → Model → Scoring → Controller → Report
-
-[1] ingest_telemetry        CSV + metadata → Parquet (86,400 rows)
-[2] engineer_features       55 features: rolling stats, rates, fleet z-scores
-[3] compute_true_efficiency TE formula: voltage-normalized, ambient-corrected
-[4a] train_anomaly_model    XGBoost → anomaly_model.joblib (F1=92.8%)
-[4b] score_fleet            Load model, score last 24h window
-[5] optimize_fleet          Tier-based controller → operational commands
-[6] generate_report         HTML dashboard with charts and action table
+mining_optimization/
+├── tasks/                          # Pipeline tasks (standalone Python scripts)
+│   ├── ingest.py                   #   [1] CSV → Parquet, schema validation, dedup
+│   ├── features.py                 #   [2] 75 engineered features (rolling, rates, z-scores, interactions)
+│   ├── kpi.py                      #   [3] True Efficiency KPI + diagnostic decomposition
+│   ├── train_model.py              #   [4a] XGBoost classifier + quantile regressors
+│   ├── score.py                    #   [4b] 24h sliding window inference → risk scores
+│   ├── trend_analysis.py           #   [5] CUSUM, OLS slopes, projected threshold crossings
+│   ├── optimize.py                 #   [6] Tier classification + safety overrides
+│   ├── report.py                   #   [7] HTML dashboard with charts
+│   ├── fleet_status.py             #   Fleet status query (used by AI agent)
+│   ├── control_action.py           #   Fleet control actions (underclock, maintenance)
+│   └── generate_batch.py           #   Batch data generation task
+│
+├── scripts/                        # Orchestrators and standalone tools
+│   ├── orchestrate_training.py     #   Training chain (Pattern 1: continue_from)
+│   ├── orchestrate_inference.py    #   Inference chain + AI agent notification
+│   ├── orchestrate_simulation.py   #   Growing-window simulation loop
+│   ├── physics_engine.py           #   CMOS power model, 10 anomaly types, 6 ASIC models
+│   ├── simulation_engine.py        #   Per-device per-timestep tick simulation
+│   ├── generate_training_corpus.py #   Multi-scenario corpus generator
+│   └── register_validance_workflows.py  # Register mdk.* workflows with API
+│
+├── workflows/                      # Workflow DAG definitions (Validance SDK)
+│   ├── fleet_intelligence.py       #   7 composable workflows (pre_processing, train, score, etc.)
+│   └── fleet_simulation.py         #   Growing-window simulation wrapper
+│
+├── knowledge/                      # Organizational knowledge corpus (RAG)
+│   ├── company-profile.md          #   Company overview, location, capacity
+│   ├── team-roster.md              #   Personnel, shifts, availability
+│   ├── hardware-inventory.md       #   ASIC models, batches, warranty
+│   ├── maintenance-sops.md         #   Standard operating procedures
+│   ├── facility-specs.md           #   Power, cooling, network infrastructure
+│   ├── financial-overview.md       #   Energy rates, budget, BTC breakeven
+│   ├── vendor-contacts.md          #   Suppliers, SLAs, spare parts
+│   ├── safety-procedures.md        #   Emergency protocols, escalation
+│   └── knowledge_corpus.md         #   Concatenated corpus (ingested by RAG pipeline)
+│
+├── tests/                          # Test suite (76 tests)
+├── docs/                           # Documentation (see below)
+├── data/                           # Generated data + pipeline artifacts (gitignored)
+├── project_materials/              # Assignment brief, reference PDFs
+├── Dockerfile                      # ML pipeline image (~500 MB)
+└── Dockerfile.control              # Fleet control image (~50 MB, stdlib only)
 ```
+
+### Docker Images
+
+| Image | Dockerfile | Size | Purpose |
+|-------|-----------|------|---------|
+| `mdk-fleet-intelligence` | `Dockerfile` | ~500 MB | Full ML pipeline (pandas, XGBoost, scikit-learn, matplotlib) |
+| `fleet-control` | `Dockerfile.control` | ~50 MB | Fleet status queries + control actions (stdlib only) |
+| `rag-tasks` | (in validance-workflow) | ~120 MB | Knowledge query via RAG (httpx, numpy) |
+
+---
+
+## Three-Layer Architecture
+
+```
+① Hardware telemetry (5-min intervals)
+        ↓
+② ML Detection Pipeline          7-task DAG, containerized
+   ingest → features → KPI       75 features, True Efficiency KPI
+   → train/score → trends        XGBoost + quantile regressors
+   → optimize → report           tier classification + safety overrides
+        ↓
+③ AI Reasoning Agent              LLM with three context layers:
+   fleet_status_query             · ML perception (risk scores, tiers)
+   web_search                     · Market context (BTC price)
+   knowledge_query                · Organizational context (SOPs, team, specs)
+        ↓
+④ Governance Layer                approval gate, learned policies,
+                                  rate limits, content-addressed audit
+        ↓
+⑤ MOS Command Execution          setFrequency, setPowerMode, reboot
+```
+
+See [`docs/architecture.svg`](docs/architecture.svg) for the full diagram.
+
+---
+
+## Integration Layers
+
+This pipeline is a **client** of the Validance workflow engine. It does not depend on Validance at runtime — tasks are standalone Python scripts. The integration is at the orchestration level:
+
+| Layer | Repository | Role |
+|-------|-----------|------|
+| **Workflow Engine** | `validance-workflow` | Executes tasks in containers, manages artifacts, content-addressed audit chain |
+| **AI Agent Plugin** | `safeclaw` | Bridges the LLM agent to the governance API (approval gate, learned policies) |
+| **AI Assistant** | `openclaw` | Personal AI assistant platform (hosts the reasoning agent) |
+| **This repo** | `mining_optimization` | Pipeline tasks, physics engine, orchestrators, knowledge corpus |
+
+---
 
 ## Documentation
 
+### Deliverables
+
 | Document | Contents |
 |----------|----------|
-| [`docs/system-overview.md`](docs/system-overview.md) | Architecture, pipeline DAG, data flow, controller tiers, tech stack |
-| [`docs/technical-report.md`](docs/technical-report.md) | Assignment deliverable: 9-section technical report |
-| [`docs/true-efficiency-kpi.md`](docs/true-efficiency-kpi.md) | True Efficiency KPI formulation, decomposition, health scoring |
-| [`docs/data-generation.md`](docs/data-generation.md) | Synthetic data generator: physics model, anomaly injection, configuration |
-| [`docs/mos-reference.md`](docs/mos-reference.md) | MOS/MDK source reference: telemetry fields, control commands, architecture mapping |
-| [`docs/mos_platform_audit.md`](docs/mos_platform_audit.md) | MOS platform audit: gap analysis, mitigation status, integration roadmap |
+| [`docs/technical-report.md`](docs/technical-report.md) | Technical report (assignment deliverable) |
+| [`docs/architecture.svg`](docs/architecture.svg) | End-to-end architecture diagram |
+| [`docs/architecture-diagram.md`](docs/architecture-diagram.md) | Architecture diagram (ASCII, detailed) |
+| [`docs/validation-report.html`](docs/validation-report.html) | Validation report — 36 SR checks against requirements |
 
-## Project Materials
+### Reference
 
-Reference documents in [`project_materials/`](project_materials/):
+| Document | Contents |
+|----------|----------|
+| [`docs/system-overview.md`](docs/system-overview.md) | System overview, data flow, controller tiers, tech stack |
+| [`docs/code-documentation.md`](docs/code-documentation.md) | Per-file code documentation |
+| [`docs/feature-catalog.md`](docs/feature-catalog.md) | Complete feature catalog (75 features, computation, rationale) |
+| [`docs/true-efficiency-kpi.md`](docs/true-efficiency-kpi.md) | True Efficiency KPI formulation and decomposition |
+| [`docs/evaluation-analysis.md`](docs/evaluation-analysis.md) | Model evaluation, threshold analysis |
+| [`docs/user-guide.md`](docs/user-guide.md) | Operational user guide |
+| [`docs/requirements.md`](docs/requirements.md) | Functional and non-functional requirements |
 
-| File | Contents |
-|------|----------|
-| `project_assignement.pdf` | Official assignment brief — scope, deliverables, data points |
-| `Introduction to Bitcoin Mining (WHY → HOW → WHAT).pdf` | Mining fundamentals — from economic rationale to hardware mechanics |
-| `Mining Economics.pptx.pdf` | Profitability analysis — energy costs, network difficulty, efficiency trade-offs |
-| `gio_kickoff_transcript.txt` | Kickoff call transcript with Gio Galt (Tether) — context, Q&A, expectations |
+### MOS / MDK References
 
-## MOS / MDK References
+- [mos.tether.io](https://mos.tether.io) — MiningOS (open-source, Apache 2.0)
+- [mdk.tether.io](https://mdk.tether.io) — Mining Development Kit
+- [github.com/tetherto](https://github.com/tetherto) — MOS source repositories (`miningos-*` prefix)
 
-### Platforms
-
-- [mos.tether.io](https://mos.tether.io) — MiningOS product page (open-source, P2P, Apache 2.0)
-- [docs.mos.tether.io](https://docs.mos.tether.io) — MOS documentation (architecture, dashboards, device support, alerts)
-- [mdk.tether.io](https://mdk.tether.io) — Mining Development Kit (adapters, orchestrator, API layer)
-- [docs.mdk.tether.io](https://docs.mdk.tether.io) — MDK developer reference (backend SDK, React UI kit, deployment)
-
-### Key Source Repositories
-
-| Repository | Role | What we used |
-|------------|------|--------------|
-| [miningos-wrk-miner-antminer](https://github.com/tetherto/miningos-wrk-miner-antminer) | Antminer worker (S19XP, S21, S21 Pro) | Telemetry fields, temperature thresholds, control commands (`setFrequency`, `setPowerMode`), nominal efficiency values |
-| [miningos-wrk-miner-whatsminer](https://github.com/tetherto/miningos-wrk-miner-whatsminer) | Whatsminer worker (M30SP, M53S, M63) | Cross-vendor data model validation |
-| [miningos-wrk-ork](https://github.com/tetherto/miningos-wrk-ork) | Orchestrator | Action voting/approval system, fleet-wide aggregation, unified query interface |
-| [miningos-wrk-powermeter-schneider](https://github.com/tetherto/miningos-wrk-powermeter-schneider) | Schneider power meter | Modbus register map (voltage, current, power factor, energy), site-level power monitoring |
-| [miningos-wrk-minerpool-ocean](https://github.com/tetherto/miningos-wrk-minerpool-ocean) | Ocean pool integration | Hashrate at 60s/1h/24h intervals, share stats, earnings |
-
-The Antminer worker and orchestrator repos provided the most actionable data for our pipeline. See [`docs/mos-reference.md`](docs/mos-reference.md) for the full field mapping and architecture analysis.
-
-### Browse & Press
-
-- [github.com/tetherto](https://github.com/tetherto) — 125 repos, look for `miningos-*` prefix
-- [Tether Open Sources MOS & Mining SDK](https://tether.io/news/tether-open-sources-the-next-generation-of-bitcoin-mining-infrastructure-with-mos-mining-os-mining-sdk/) — Official announcement
+Key repos: [antminer worker](https://github.com/tetherto/miningos-wrk-miner-antminer) (telemetry fields, control commands), [orchestrator](https://github.com/tetherto/miningos-wrk-ork) (approval system, fleet aggregation).
