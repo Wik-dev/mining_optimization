@@ -10,6 +10,7 @@ Last edited: 2026-04-06
 
 | Date | Change |
 |------|--------|
+| 2026-04-18 | Added `knowledge_query` template to §5.1, updated §1.1 prerequisites with `rag-tasks` image |
 | 2026-04-06 | Update for `continue_from` deep context model resolution (training-hash replaces model-path) |
 | 2026-04-05 | Initial version |
 
@@ -54,7 +55,7 @@ Prerequisites: Docker running, Validance API at `:8001`, task images built. See 
 |-----------|----------|-------|
 | Docker | Running on host | `docker ps` |
 | Validance API | Running at `:8001` (dev) or `:8000` (prod) | `curl -s http://localhost:8001/api/health` |
-| Task images | `mdk-fleet-intelligence`, `fleet-control` | `docker images \| grep mdk` |
+| Task images | `mdk-fleet-intelligence`, `fleet-control`, `rag-tasks` | `docker images \| grep -E 'mdk\|fleet-control\|rag-tasks'` |
 | Python 3.11+ | In dev container or host | `python3 --version` |
 | PYTHONPATH | Includes validance-workflow | `echo $PYTHONPATH` |
 
@@ -181,7 +182,7 @@ python scripts/orchestrate_inference.py \
   --api-url http://localhost:8001 \
   --telemetry-csv /work/fleet_telemetry.csv \
   --metadata-json /work/fleet_metadata.json \
-  --training-hash fa6d414fd91dd1ab
+  --training-hash 09605d5baa372954
 ```
 
 Model artifacts (anomaly_model.joblib, regression_model, model_metrics) are resolved automatically via Validance's `continue_from` deep context chain — no explicit file paths needed. The training hash is printed at the end of the training chain (§2.1).
@@ -239,7 +240,7 @@ Click "Start Simulation" in the dashboard sidebar, select a scenario, and the da
 ```bash
 python scripts/orchestrate_simulation.py \
   --scenario data/scenarios/asic_aging.json \
-  --training-hash fa6d414fd91dd1ab \
+  --training-hash 09605d5baa372954 \
   --api-url http://localhost:8001
 ```
 
@@ -249,7 +250,7 @@ Model artifacts are resolved via `continue_from` deep context — the training h
 # 7-day intervals → fewer cycles (26 instead of 180), faster demo
 python scripts/orchestrate_simulation.py \
   --scenario data/scenarios/asic_aging.json \
-  --training-hash fa6d414fd91dd1ab \
+  --training-hash 09605d5baa372954 \
   --interval-days 7
 ```
 
@@ -420,6 +421,12 @@ SafeClaw reads the inference outputs to build context:
 
 SafeClaw combines this with real-time context (BTC price, energy costs, maintenance crew availability) to propose actions with natural-language rationale.
 
+**`knowledge_query`** (auto-approve):
+- Queries organizational knowledge base via RAG (retrieval-augmented generation).
+- The agent uses this to check SOPs, team availability, hardware specs, and financial constraints before proposing actions.
+- Reads a pre-built vector index (built from `knowledge/` corpus via `rag.ingest` workflow).
+- Parameters: `query` (natural language question), `input_files` (must include `index.json` reference).
+
 ### 5.2 What a Proposal Looks Like
 
 When SafeClaw proposes an action, you see:
@@ -513,7 +520,7 @@ Orchestration chains:
 | Task | Script | Input | Output |
 |------|--------|-------|--------|
 | Ingest | `tasks/ingest.py` | CSV + metadata JSON | `telemetry.parquet` |
-| Features | `tasks/features.py` | `telemetry.parquet` | `features.parquet` (55 features/sample) |
+| Features | `tasks/features.py` | `telemetry.parquet` | `features.parquet` (75 features/device-timestep) |
 | KPI | `tasks/kpi.py` | `features.parquet` | `kpi_timeseries.parquet` |
 | Train | `tasks/train_model.py` | `kpi_timeseries.parquet` | `anomaly_model.joblib`, `model_metrics.json` |
 | Score | `tasks/score.py` | `kpi_timeseries.parquet` + model | `fleet_risk_scores.json` |

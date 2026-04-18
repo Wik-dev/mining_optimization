@@ -54,6 +54,7 @@ logger = logging.getLogger("orchestrate_inference")
 
 POLL_INTERVAL = 5
 POLL_TIMEOUT = 1800
+NOT_FOUND_GRACE_SECONDS = 30  # Allow engine time to write execution record
 
 
 def trigger_workflow(session: requests.Session, api_url: str,
@@ -90,6 +91,13 @@ def poll_completion(session: requests.Session, api_url: str,
                     return data
                 if status in ("failed", "error"):
                     raise RuntimeError(f"Workflow {workflow_name} ({workflow_hash}) failed: {data}")
+            elif resp.status_code == 404:
+                elapsed = time.monotonic() - start
+                if elapsed > NOT_FOUND_GRACE_SECONDS:
+                    raise RuntimeError(
+                        f"Workflow {workflow_name} ({workflow_hash}) not found "
+                        f"after {elapsed:.0f}s — likely failed during engine "
+                        f"initialization (check engine logs)")
         except (ConnectionError, OSError) as e:
             logger.debug("Poll error (will retry): %s", e)
 

@@ -206,19 +206,25 @@ def main():
         print(json.dumps({"status": "error", "error": "Missing required parameter: query_type"}))
         sys.exit(1)
 
-    # Load fleet data files (fleet_actions.json is optional — Pattern 5a
-    # simulation runs don't register it in task_variables)
+    # Load fleet data files. fleet_actions.json and fleet_metadata.json are
+    # optional — only summary and device_detail need metadata. The agent
+    # may only pass fleet_risk_scores.json via input_files.
     risk_scores = load_json("fleet_risk_scores.json")
     actions_data = load_json("fleet_actions.json", required=False)
-    metadata = load_json("fleet_metadata.json")
+    metadata = load_json("fleet_metadata.json", required=False)
 
     # Dispatch query
     if query_type == "summary":
-        result = query_summary(risk_scores, actions_data, metadata)
+        if not metadata:
+            result = {"status": "error", "error": "summary requires fleet_metadata.json in input_files"}
+        else:
+            result = query_summary(risk_scores, actions_data, metadata)
     elif query_type == "device_detail":
         device_id = params.get("device_id")
         if not device_id:
             result = {"status": "error", "error": "device_detail requires device_id parameter"}
+        elif not metadata:
+            result = {"status": "error", "error": "device_detail requires fleet_metadata.json in input_files"}
         else:
             result = query_device_detail(device_id, risk_scores, actions_data, metadata)
     elif query_type == "tier_breakdown":

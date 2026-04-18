@@ -28,8 +28,11 @@ TELEMETRY_COLS = [
     "voltage_v", "cooling_power_w", "efficiency_jth",
 ]
 
-# Columns present before feature engineering (for feature count diff)
+# Columns present before feature engineering (for feature count diff).
+# Must match physics_engine.TELEMETRY_COLUMNS (35 cols) so that only
+# truly engineered columns are counted as features.
 EXPECTED_TELEMETRY_COLS = {
+    # Original 17 columns
     "timestamp", "device_id", "model",
     "clock_ghz", "voltage_v", "hashrate_th",
     "power_w", "temperature_c", "cooling_power_w",
@@ -37,6 +40,15 @@ EXPECTED_TELEMETRY_COLS = {
     "operating_mode", "efficiency_jth",
     "label_thermal_deg", "label_psu_instability",
     "label_hashrate_decay", "label_any_anomaly",
+    # Extended columns (physics engine v2 — 18 cols)
+    "fan_rpm", "fan_rpm_target", "dust_index", "inlet_temp_c",
+    "voltage_ripple_mv", "error_code", "reboot_count",
+    "chip_count_active", "hashboard_count_active",
+    "label_fan_bearing_wear", "label_capacitor_aging",
+    "label_dust_fouling", "label_thermal_paste_deg",
+    "label_solder_joint_fatigue", "label_coolant_loop_fouling",
+    "label_firmware_cliff",
+    "operational_state", "economic_margin_usd",
 }
 
 

@@ -290,7 +290,7 @@ def create_corpus_workflow() -> Workflow:
 
     generate = Task(
         name="generate_training_data",
-        command="python /app/scripts/generate_training_corpus.py --all",
+        command="python /app/scripts/generate_training_corpus.py --all --output .",
         docker_image=TASK_IMAGE,
         inputs={},
         output_files={

@@ -2,7 +2,7 @@
 
 ## System Overview
 
-Four-layer architecture: **Tasks** (pure computation) are wrapped by **Scripts** (standalone execution), chained by **Orchestrators** (workflow sequencing), and declared as **Validance Pipelines** (engine-managed DAGs). Above the ML pipeline, an **AI Reasoning** layer reads pipeline data via SafeClaw and proposes actions through a **Governance** gate.
+Four-layer architecture: **Tasks** (pure computation) are wrapped by **Scripts** (standalone execution), chained by **Orchestrators** (workflow sequencing), and declared as **Validance Pipelines** (engine-managed DAGs). Above the ML pipeline, an **AI Reasoning** layer reads pipeline data, market context, and organizational knowledge via SafeClaw and proposes actions through a **Governance** gate.
 
 ---
 
@@ -43,7 +43,7 @@ Baked into the `mdk-fleet-intelligence` Docker image at `/app/tasks/`.
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────┐ │
 │  │ ingest.py        │  │ features.py      │  │ kpi.py                  │ │
 │  │                  │  │                  │  │                         │ │
-│  │ CSV → Parquet    │─→│ 55 engineered    │─→│ True Efficiency (TE)    │ │
+│  │ CSV → Parquet    │─→│ 75 engineered    │─→│ True Efficiency (TE)    │ │
 │  │ schema validate  │  │ features: roll,  │  │ = (P_asic + P_cool) /  │ │
 │  │ dedup, type cast │  │ rate, z-score,   │  │   (H × η_v)            │ │
 │  │                  │  │ interactions     │  │ decomposition + health  │ │
@@ -108,6 +108,20 @@ Baked into the `mdk-fleet-intelligence` Docker image at `/app/tasks/`.
 │  │                              │  │ · max 20% offline (redundancy)   │ │
 │  │                              │  │ → agent_actions.json audit log   │ │
 │  └──────────────────────────────┘  └──────────────────────────────────┘ │
+│                                                                         │
+│  ┌──────────────────────────────┐                                       │
+│  │ knowledge_query.py           │  Baked into rag-tasks image (~120 MB) │
+│  │                              │                                       │
+│  │ Single-shot RAG pipeline:    │                                       │
+│  │ · Embed query (OpenAI)       │                                       │
+│  │ · Cosine similarity search   │                                       │
+│  │   over pre-built index       │                                       │
+│  │ · Assemble prompt + LLM call │                                       │
+│  │                              │                                       │
+│  │ Reads /work/index.json       │                                       │
+│  │ (staged from rag.ingest)     │                                       │
+│  │ → JSON: answer + sources     │                                       │
+│  └──────────────────────────────┘                                       │
 │                                                                         │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  STANDALONE MODULE (not yet wired into DAG)                             │
@@ -301,6 +315,15 @@ All tasks run in containers from `mdk-fleet-intelligence:latest` (or `fleet-cont
 │  │  UI-triggerable via POST /api/workflows/mdk.fleet_simulation/...  │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 │                                                                         │
+│  ┌─ rag.ingest (5 tasks) ────────────────────────────────────────────┐ │
+│  │  load_documents → chunk_documents → embed_chunks → build_index   │ │
+│  │    → build_receipt                                                │ │
+│  │  Builds vector index from organizational knowledge corpus         │ │
+│  │  (SOPs, team roster, hardware inventory, facility specs, etc.)   │ │
+│  │  Output: index.json referenced as @<hash>.build_index:result      │ │
+│  │  Run once per corpus update; agent references index via hash      │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                         │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  REGISTRATION  (scripts/register_validance_workflows.py)                │
 │                                                                         │
@@ -360,13 +383,17 @@ All tasks run in containers from `mdk-fleet-intelligence:latest` (or `fleet-cont
                         │ · fleet_status_query     │
                         │   (reads Validance       │  1. Queries fleet risk data
                         │    artifacts directly)   │  2. Searches BTC price
-                        │ · web_search (BTC price) │  3. Reasons about economics
-                        │                          │  4. Proposes fleet actions
-                        │ Proposes via safeclaw(): │     with justification
-                        │ · fleet_underclock       │
-                        │ · fleet_schedule_maint   │  session_hash from notification
-                        │ · fleet_emergency_shut   │  → proposals land under same
-                        │                          │    session as pipeline data
+                        │ · web_search (BTC price) │  3. Queries org knowledge
+                        │ · knowledge_query        │     (SOPs, team, hardware)
+                        │   (organizational RAG —  │  4. Reasons about economics
+                        │    SOPs, team roster,    │     + operational context
+                        │    hardware specs,       │  5. Proposes fleet actions
+                        │    facility constraints) │     with justification
+                        │                          │
+                        │ Proposes via safeclaw(): │  session_hash from notification
+                        │ · fleet_underclock       │  → proposals land under same
+                        │ · fleet_schedule_maint   │    session as pipeline data
+                        │ · fleet_emergency_shut   │
                         └────────────┬────────────┘
                                      │
                                      ↓
@@ -398,7 +425,7 @@ All tasks run in containers from `mdk-fleet-intelligence:latest` (or `fleet-cont
   │                          │     │                                 │
   │  ingest_telemetry ───────│────→│  telemetry.parquet              │
   │        ↓                 │     │                                 │
-  │  engineer_features ──────│────→│  features.parquet (55 features) │
+  │  engineer_features ──────│────→│  features.parquet (75 features) │
   │        ↓                 │     │                                 │
   │  compute_true_efficiency─│────→│  kpi_timeseries.parquet         │
   │        ↓                 │     │                                 │
@@ -419,23 +446,29 @@ All tasks run in containers from `mdk-fleet-intelligence:latest` (or `fleet-cont
   │  AI REASONING LAYER      │    │  Trigger: orchestrator push     │
   │  (SafeClaw / LLM Agent)  │    │                                │
   │                          │    │  POST /hooks/agent with:        │
-  │  Reads via SafeClaw:     │    │  · session_hash                 │
-  │  · fleet_status_query    │←───│  · input_files refs             │
-  │    (risk_ranking,        │    │    (@hash.task:artifact)        │
-  │     device_detail —      │    │                                │
-  │     reads Validance      │    │  Pure orchestration — no data   │
-  │     artifacts directly)  │    │  parsing, just hashes.          │
-  │  · web_search            │    │  Agent reads data via SafeClaw. │
-  │    (BTC price for        │    └────────────────────────────────┘
-  │     economic reasoning)  │
-  │  · HEARTBEAT.md          │    Dashboard (fleet-health-monitor)
-  │    (agent instructions)  │    shows both ML commands and AI
-  │                          │    proposals under same session.
+  │  Three-layer context:    │    │  · session_hash                 │
+  │                          │←───│  · input_files refs             │
+  │  · fleet_status_query    │    │    (@hash.task:artifact)        │
+  │    (risk_ranking,        │    │                                │
+  │     device_detail —      │    │  Pure orchestration — no data   │
+  │     reads Validance      │    │  parsing, just hashes.          │
+  │     artifacts directly)  │    │  Agent reads data via SafeClaw. │
+  │  · web_search            │    └────────────────────────────────┘
+  │    (BTC price for        │
+  │     economic reasoning)  │    Dashboard (fleet-health-monitor)
+  │  · knowledge_query       │    shows both ML commands and AI
+  │    (organizational RAG:  │    proposals under same session.
+  │     SOPs, team roster,   │
+  │     hardware inventory,  │    session_hash override: agent
+  │     facility specs,      │    passes pipeline session_hash
+  │     financial data)      │    from notification → proposals
+  │  · HEARTBEAT.md          │    land alongside pipeline data.
+  │    (agent instructions)  │
+  │                          │
   │  Proposes via safeclaw():│
-  │  · fleet_underclock      │    session_hash override: agent
-  │  · fleet_schedule_maint  │    passes pipeline session_hash
-  │  · fleet_emergency_shut  │    from notification → proposals
-  │                          │    land alongside pipeline data.
+  │  · fleet_underclock      │
+  │  · fleet_schedule_maint  │
+  │  · fleet_emergency_shut  │
   │  caller_id: "safeclaw"   │
   └──────────┬───────────────┘
              │ proposed commands
@@ -464,9 +497,13 @@ All tasks run in containers from `mdk-fleet-intelligence:latest` (or `fleet-cont
   │  · reboot                │
   └──────────────────────────┘
 
-  Key design principle: the AI agent accesses pipeline data through the
-  same channel it uses to propose actions (SafeClaw → Validance API).
-  No filesystem bridge — reads and writes go through one governed path.
+  Key design principle: the AI agent accesses pipeline data, market context,
+  and organizational knowledge through the same channel it uses to propose
+  actions (SafeClaw → Validance API). No filesystem bridge — reads and
+  writes go through one governed path. Three information layers (ML
+  perception, market awareness, organizational context) feed into a single
+  reasoning chain that produces economically and operationally justified
+  proposals.
 ```
 
 ---
@@ -477,6 +514,7 @@ All tasks run in containers from `mdk-fleet-intelligence:latest` (or `fleet-cont
 |-------|----------|------|---------|
 | `mdk-fleet-intelligence:latest` | Python 3.11 + pandas, numpy, scikit-learn, XGBoost, matplotlib, scipy. All `tasks/` + `scripts/` at `/app/` | ~500 MB | Pipeline tasks (ingest, features, kpi, train, score, trends, optimize, report) |
 | `fleet-control:latest` | Python 3.11 + stdlib only. `fleet_status.py` + `control_action.py` at `/app/tasks/` | ~50 MB | Catalog tasks (fleet queries, control actions via proposal pipeline) |
+| `rag-tasks:latest` | Python 3.11 + httpx, numpy, azure-storage-blob. `knowledge_query.py` at `/app/scripts/`, RAG modules at `/work/modules/rag/` | ~120 MB | Knowledge query (single-shot RAG) and RAG ingest pipeline (rag.ingest workflow) |
 
 ## Scenario Data
 

@@ -26,7 +26,10 @@ Built as composable single-concern workflows executing in Docker containers, cha
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                      AI Reasoning Layer (SafeClaw)                        │
 │                                                                          │
-│  Reads: ML output + real-time market data + operator knowledge base      │
+│  Three-layer context gathering:                                          │
+│  · fleet_status_query → ML output (risk scores, tiers, predictions)     │
+│  · web_search → real-time market data (BTC price, difficulty)           │
+│  · knowledge_query → organizational RAG (SOPs, team, hardware, finance) │
 │  Proposes: specific MOS commands with rationale                          │
 │  Goes through: Validance approval gate (human-in-the-loop)              │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -91,7 +94,7 @@ All intermediate data is **Parquet** (typed, columnar, compressed). Final output
 | # | Task | Script | What it does |
 |---|------|--------|-------------|
 | 1 | Ingest | `tasks/ingest.py` | CSV → Parquet, schema validation, dedup, type coercion |
-| 2 | Features | `tasks/features.py` | 55 engineered features: rolling stats (30m/1h/12h/24h), rates of change, fleet-relative z-scores, physics interactions |
+| 2 | Features | `tasks/features.py` | 75 engineered features: rolling stats (30m/1h/12h/24h/7d), rates of change, fleet-relative z-scores, physics interactions |
 | 3 | KPI | `tasks/kpi.py` | True Efficiency formula: `TE = (P_asic + P_cooling_norm) / (H × η_v)` with diagnostic decomposition |
 | 4a | Train | `tasks/train_model.py` | XGBoost binary classifier + 3 per-anomaly sub-classifiers + quantile regressors |
 | 4b | Score | `tasks/score.py` | 24h sliding window inference → per-device risk scores |
@@ -166,7 +169,7 @@ The pipeline runs on physics-modeled synthetic telemetry (`scripts/generate_trai
 
 ## MOS/MDK Integration Target
 
-Designed for integration with Tether's open-source MOS platform. Controller tier classifications map to MOS RPC methods, actions carry MOS error codes, and the SafeClaw agent connects MOS's multi-voter approval system to Validance's approval gate. See `mos-reference.md` and `mos_platform_audit.md` for field mapping and gap analysis.
+Designed for integration with the MOS (Mining Operating System) platform. Controller tier classifications map to MOS RPC methods, actions carry MOS error codes, and the AI agent connects MOS's multi-voter approval system to the governance layer's approval gate.
 
 ## Project Structure
 
@@ -194,6 +197,8 @@ mining_optimization/
 ├── workflows/                # Workflow definitions
 │   ├── fleet_intelligence.py         # 5 composable workflows
 │   └── fleet_simulation.py           # Persistent simulation loop
+├── knowledge/                # Organizational knowledge corpus (8 markdown files)
+│   └── knowledge_corpus.md          # Concatenated corpus (ingested via rag.ingest)
 ├── tests/                    # Test suite (74 tests)
 │   ├── conftest.py                   # Session-scoped pipeline fixture
 │   ├── test_pipeline_integration.py  # Integration tests (28 tests)

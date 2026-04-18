@@ -313,6 +313,16 @@ def main():
     csv_path, meta_path = write_outputs(all_rows, metadata, args.output)
     print_summary(metadata, csv_path)
 
+    # Write Validance output variables (required when run as a Validance task
+    # with output_vars declared in the workflow definition).
+    vars_path = os.path.join(args.output, "_validance_vars.json")
+    with open(vars_path, "w") as f:
+        json.dump({
+            "row_count": len(all_rows),
+            "device_count": len(combined_fleet),
+            "scenario_count": len(scenario_infos),
+        }, f)
+
 
 if __name__ == "__main__":
     main()

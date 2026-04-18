@@ -41,7 +41,7 @@ Usage (CLI, Pattern 1):
     # With AI agent push (notifies OpenClaw when devices are flagged):
     python scripts/orchestrate_simulation.py \\
         --scenario data/scenarios/summer_heatwave.json \\
-        --training-hash fa6d414fd91dd1ab \\
+        --training-hash 09605d5baa372954 \\
         --gateway-url http://172.18.0.1:19001 \\
         --gateway-token fleet-hook-2026
 
@@ -181,10 +181,17 @@ def trigger_workflow(session: requests.Session, api_url: str,
 
 def poll_completion(session: requests.Session, api_url: str,
                     workflow_name: str, workflow_hash: str) -> dict:
-    """Poll until workflow completes or times out."""
+    """Poll until workflow completes or times out.
+
+    A 404 from the status endpoint means the workflow execution record was
+    never written — typically because the engine failed during initialization
+    (e.g. bad continue_from hash). After a grace period (30s), treat 404 as
+    a fatal error instead of retrying forever.
+    """
     url = (f"{api_url}/api/workflows/{workflow_name}/status"
            f"?workflow_hash={workflow_hash}")
     start = time.monotonic()
+    NOT_FOUND_GRACE_SECONDS = 30
 
     while time.monotonic() - start < POLL_TIMEOUT:
         try:
@@ -197,6 +204,13 @@ def poll_completion(session: requests.Session, api_url: str,
                 if status in ("failed", "error"):
                     raise RuntimeError(
                         f"Workflow {workflow_name} ({workflow_hash}) failed: {data}")
+            elif resp.status_code == 404:
+                elapsed = time.monotonic() - start
+                if elapsed > NOT_FOUND_GRACE_SECONDS:
+                    raise RuntimeError(
+                        f"Workflow {workflow_name} ({workflow_hash}) not found "
+                        f"after {elapsed:.0f}s — likely failed during engine "
+                        f"initialization (check engine logs)")
         except (ConnectionError, OSError) as e:
             logger.debug("Poll error (will retry): %s", e)
 
@@ -306,13 +320,14 @@ def run_simulation(api_url: str, scenario_path: str, interval_days: int,
         f"simulation_{os.path.basename(scenario_path)}_{datetime.now().isoformat()}".encode()
     ).hexdigest()[:16]
 
-    # For inner workflow triggers, we need a host-resolvable URI for the scenario.
-    # Pattern 5a: the original trigger parameter (CTX_SCENARIO_PATH) is already a
-    # host-resolvable file:// URI — use it directly. Container-local paths like
-    # /work/simulation_orchestrator/scenario.json are NOT resolvable by the host engine.
+    # For inner workflow triggers, we need an engine-resolvable URI for the scenario.
+    # Pattern 5a: the original trigger parameter (CTX_SCENARIO_PATH) is already an
+    # engine-resolvable URI (file:// or azure://) — pass it through directly.
+    # Container-local paths like /work/simulation_orchestrator/scenario.json are
+    # NOT resolvable by the host engine.
     # CLI mode: scenario_path is a local host path — convert to file:// URI.
     original_scenario_uri = os.environ.get("CTX_SCENARIO_PATH")
-    if original_scenario_uri and original_scenario_uri.startswith("file://"):
+    if original_scenario_uri and ("://" in original_scenario_uri):
         scenario_uri = original_scenario_uri
     else:
         scenario_uri = f"file://{os.path.abspath(scenario_path)}"

@@ -4,12 +4,13 @@
 
 Wiktor Lisowski | April 2026
 
-Last edited: 2026-04-06
+Last edited: 2026-04-18
 
 ### Change Log
 
 | Date | Change |
 |------|--------|
+| 2026-04-18 | Added §1.5 Knowledge Corpus & RAG Integration — organizational knowledge pipeline (knowledge_query, rag.ingest, knowledge/ directory) |
 | 2026-04-06 | Step 2 features: 7-day rolling windows (5), `voltage_ripple_std_24h`, `chip_dropout_ratio`, `te_score_slope_24h`, `te_score_slope_7d` — updated §1.4, §2.7, §2.9, §2.10, §3.8, §3.9 feature counts (43→50 classifier, 6→8 temporal, 49→58 regressor) |
 | 2026-04-06 | Added 6 hardware health sensor features (`fan_rpm`, `voltage_ripple_mv`, `reboot_count`, `chip_count_active`, `hashboard_count_active`, `dust_index`) — updated §1.4, §2.10, §3.8, §3.9 feature counts (37→43 classifier, 43→49 regressor) |
 | 2026-04-05 | Added §1.4 feature computation timeline, expanded §2.10 (score.py) with feature justifications, known gaps, scoring window rationale |
@@ -294,6 +295,38 @@ How far back each model path looks, shown as a timeline from oldest data to pres
 | Classifier | >=7d before window (for 7d rolling features to warm up) | Every row in last 24h | `mean_risk`, `max_risk`, `pct_flagged` per device |
 | Regressor | Full history (lags up to 24h back from last row) | Last row only | TE_score at 1h/6h/24h/7d with p10/p50/p90 |
 
+### 1.5 Knowledge Corpus & RAG Integration
+
+The AI reasoning agent queries organizational knowledge via `knowledge_query` (a catalog task running in the `rag-tasks` Docker image). This provides company-specific context — SOPs, team availability, hardware specs, financial constraints — that the agent weaves into its economic reasoning alongside ML perception and market data.
+
+**Knowledge corpus** (`knowledge/` directory — 8 markdown files):
+
+| File | Content | Key queryable facts |
+|------|---------|-------------------|
+| `company-profile.md` | Organization overview, mission, location | 50MW facility, Kiruna Sweden, 5000 ASICs |
+| `team-roster.md` | Personnel, roles, shifts, availability | Jean on leave April 15–May 5, night shift contacts |
+| `hardware-inventory.md` | ASIC models, batches, warranty, rack locations | S19j Pro batch B2 warranty expires June 2026 |
+| `maintenance-sops.md` | SOPs: thermal response, fan swap, PSU replacement | SOP-004: underclock-first, then schedule maintenance |
+| `facility-specs.md` | Power capacity, cooling system, network | 50MW transformer, evaporative cooling, 35°C ambient limit |
+| `financial-overview.md` | Electricity rates, budget, BTC breakeven | $0.045/kWh base, $28k BTC breakeven, $50k/month equipment budget |
+| `vendor-contacts.md` | Suppliers, SLAs, spare parts inventory | Bitmain 48h response SLA, 50 replacement fans in stock |
+| `safety-procedures.md` | Emergency protocols, escalation matrix | Thermal >80°C → immediate shutdown, call site manager |
+
+**Indexing pipeline** (`rag.ingest` workflow — 5 tasks in `rag-tasks` image):
+
+```
+knowledge_corpus.md → load_documents → chunk_documents → embed_chunks → build_index → build_receipt
+                      (parse MD)       (split ~500 tok)   (OpenAI API)    (JSON + vectors)  (hash chain)
+```
+
+The corpus files are concatenated into `knowledge_corpus.md`, uploaded to Azure blob storage, and ingested via `rag.ingest`. Output: `index.json` (~44 chunks with embeddings), referenced as `@<ingest_hash>.build_index:result`. Run once per corpus update.
+
+**Query script** (`validance-workflow/modules/rag/tasks/knowledge_query.py`):
+
+Self-contained script (no imports from `modules.rag/`). Reads `VALIDANCE_PARAMS` env for query, loads `index.json` from `/work/`, embeds query via OpenAI `text-embedding-3-small`, cosine similarity search (top-K=5), assembles prompt with mining-ops system prompt + retrieved context, calls `gpt-4.1-mini`. Returns JSON: `{status, query, response, sources, model, usage, manifest}`.
+
+**Catalog template**: `knowledge_query` — `approval_tier: auto-approve`, `secret_refs: ["OPENAI_API_KEY"]`, `timeout: 60s`, `rate_limit: 100/session`.
+
 <a id="ingest"></a>
 ### 2.6 `tasks/ingest.py`
 
@@ -311,7 +344,7 @@ How far back each model path looks, shown as a timeline from oldest data to pres
 <a id="features"></a>
 ### 2.7 `tasks/features.py`
 
-**Purpose**: Engineers ~55 features from raw telemetry: rolling stats, rates of change, fleet-relative z-scores, interaction terms.
+**Purpose**: Engineers 75 features from raw telemetry: rolling stats, rates of change, fleet-relative z-scores, interaction terms.
 
 **Inputs**: `telemetry.parquet`, `fleet_metadata.json`
 **Outputs**: `features.parquet`, `_validance_vars.json`
