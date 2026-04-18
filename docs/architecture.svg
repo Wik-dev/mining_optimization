@@ -1,0 +1,218 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 900" font-family="'Helvetica Neue', Arial, sans-serif">
+  <!-- ============================================================
+       System Architecture — Fleet Intelligence Pipeline
+       Three functional layers on top of the mining hardware,
+       feeding into a governed command execution path.
+       ============================================================ -->
+
+  <defs>
+    <!-- Arrowheads -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-ctx" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/>
+    </marker>
+
+    <!-- Layer color tokens -->
+    <style>
+      .layer-title   { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; fill: #0f172a; }
+      .layer-sub     { font-size: 11px; fill: #475569; font-style: italic; }
+      .node-title    { font-size: 12px; font-weight: 700; fill: #0f172a; }
+      .node-sub      { font-size: 10.5px; fill: #334155; }
+      .flow-label    { font-size: 10.5px; fill: #475569; font-style: italic; }
+      .artifact      { font-size: 10px; fill: #64748b; font-family: 'Menlo', monospace; }
+      .caption       { font-size: 10.5px; fill: #64748b; }
+    </style>
+  </defs>
+
+  <!-- ==================== TITLE ==================== -->
+  <text x="480" y="26" text-anchor="middle" font-size="16" font-weight="700" fill="#0f172a">
+    Fleet Intelligence — End-to-End Architecture
+  </text>
+  <text x="480" y="44" text-anchor="middle" class="caption">
+    Hardware → Telemetry → Features → KPI → ML → AI Reasoning → Governance → Command Execution
+  </text>
+
+  <!-- ==================== 1. HARDWARE LAYER ==================== -->
+  <g>
+    <rect x="60" y="68" width="840" height="64" rx="8" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+    <text x="80" y="88" class="layer-title">① HARDWARE</text>
+    <text x="80" y="104" class="layer-sub">ASIC fleet (10 models) • environment sensors • cooling systems • MOS workers</text>
+    <text x="80" y="122" class="node-sub">Emits raw telemetry every 5 min: hashrate, power, voltage, clock, temperature, cooling power, ambient</text>
+  </g>
+
+  <!-- Flow arrow: HW → ML -->
+  <line x1="480" y1="132" x2="480" y2="168" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="490" y="154" class="flow-label">telemetry.csv</text>
+
+  <!-- ==================== 2. ML DETECTION PIPELINE ==================== -->
+  <g>
+    <rect x="60" y="172" width="840" height="214" rx="8" fill="#ecfeff" stroke="#0891b2" stroke-width="1.5"/>
+    <text x="80" y="192" class="layer-title">② ML DETECTION PIPELINE</text>
+    <text x="80" y="208" class="layer-sub">7-task DAG, containerized, deterministic re-execution, content-addressed artifacts</text>
+
+    <!-- Row 1: ingest → features → kpi → train/score -->
+    <g font-family="'Helvetica Neue', Arial, sans-serif">
+      <rect x="78" y="224" width="118" height="58" rx="5" fill="#ffffff" stroke="#0891b2" stroke-width="1.2"/>
+      <text x="137" y="242" text-anchor="middle" class="node-title">[1] ingest</text>
+      <text x="137" y="257" text-anchor="middle" class="node-sub">CSV → Parquet</text>
+      <text x="137" y="270" text-anchor="middle" class="node-sub">schema, dedup</text>
+
+      <rect x="210" y="224" width="118" height="58" rx="5" fill="#ffffff" stroke="#0891b2" stroke-width="1.2"/>
+      <text x="269" y="242" text-anchor="middle" class="node-title">[2] features</text>
+      <text x="269" y="257" text-anchor="middle" class="node-sub">75 features</text>
+      <text x="269" y="270" text-anchor="middle" class="node-sub">roll, Δ, z-score</text>
+
+      <rect x="342" y="224" width="118" height="58" rx="5" fill="#ffffff" stroke="#0891b2" stroke-width="1.2"/>
+      <text x="401" y="242" text-anchor="middle" class="node-title">[3] KPI</text>
+      <text x="401" y="257" text-anchor="middle" class="node-sub">True Efficiency</text>
+      <text x="401" y="270" text-anchor="middle" class="node-sub">+ decomposition</text>
+
+      <rect x="474" y="224" width="160" height="58" rx="5" fill="#ffffff" stroke="#0891b2" stroke-width="1.2"/>
+      <text x="554" y="242" text-anchor="middle" class="node-title">[4] train / score</text>
+      <text x="554" y="257" text-anchor="middle" class="node-sub">XGBoost classifier</text>
+      <text x="554" y="270" text-anchor="middle" class="node-sub">+ quantile regressors</text>
+
+      <!-- Arrows between first row -->
+      <line x1="196" y1="253" x2="210" y2="253" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <line x1="328" y1="253" x2="342" y2="253" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <line x1="460" y1="253" x2="474" y2="253" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
+    </g>
+
+    <!-- Row 2: trends → optimize → report   (moved down by 16px for clearer row-to-row routing) -->
+    <g font-family="'Helvetica Neue', Arial, sans-serif">
+      <rect x="210" y="310" width="118" height="58" rx="5" fill="#ffffff" stroke="#0891b2" stroke-width="1.2"/>
+      <text x="269" y="328" text-anchor="middle" class="node-title">[5] trends</text>
+      <text x="269" y="343" text-anchor="middle" class="node-sub">OLS, CUSUM</text>
+      <text x="269" y="356" text-anchor="middle" class="node-sub">projections</text>
+
+      <rect x="342" y="310" width="118" height="58" rx="5" fill="#ffffff" stroke="#0891b2" stroke-width="1.2"/>
+      <text x="401" y="328" text-anchor="middle" class="node-title">[6] optimize</text>
+      <text x="401" y="343" text-anchor="middle" class="node-sub">tier classify</text>
+      <text x="401" y="356" text-anchor="middle" class="node-sub">safety overrides</text>
+
+      <rect x="474" y="310" width="118" height="58" rx="5" fill="#ffffff" stroke="#0891b2" stroke-width="1.2"/>
+      <text x="533" y="328" text-anchor="middle" class="node-title">[7] report</text>
+      <text x="533" y="343" text-anchor="middle" class="node-sub">HTML dashboard</text>
+      <text x="533" y="356" text-anchor="middle" class="node-sub">charts + tables</text>
+
+      <!-- Row 1 → Row 2 connector (now 28px of vertical headroom) -->
+      <line x1="554" y1="282" x2="554" y2="296" stroke="#334155" stroke-width="1.5"/>
+      <line x1="554" y1="296" x2="270" y2="296" stroke="#334155" stroke-width="1.5"/>
+      <line x1="270" y1="296" x2="270" y2="310" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+      <!-- Row 2 internal arrows -->
+      <line x1="328" y1="339" x2="342" y2="339" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <line x1="460" y1="339" x2="474" y2="339" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
+    </g>
+
+    <!-- Side callout: pipeline artifacts  (widened to 250px to fit the full filenames) -->
+    <g>
+      <rect x="636" y="310" width="250" height="58" rx="5" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="761" y="328" text-anchor="middle" class="node-title">Key artifacts</text>
+      <text x="761" y="344" text-anchor="middle" class="artifact">fleet_risk_scores.json</text>
+      <text x="761" y="359" text-anchor="middle" class="artifact">fleet_actions.json · trend_analysis.json</text>
+    </g>
+  </g>
+
+  <!-- Flow arrow: ML → AI -->
+  <line x1="480" y1="386" x2="480" y2="424" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="490" y="409" class="flow-label">tier + risk + projections</text>
+
+  <!-- ==================== 3. AI REASONING LAYER ==================== -->
+  <g>
+    <rect x="60" y="428" width="840" height="148" rx="8" fill="#faf5ff" stroke="#7c3aed" stroke-width="1.5"/>
+    <text x="80" y="448" class="layer-title">③ AI REASONING</text>
+    <text x="80" y="464" class="layer-sub">LLM agent synthesises ML perception, market context, and organizational knowledge</text>
+
+    <!-- Central agent box -->
+    <rect x="340" y="480" width="280" height="82" rx="6" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+    <text x="480" y="500" text-anchor="middle" class="node-title">LLM Agent</text>
+    <text x="480" y="516" text-anchor="middle" class="node-sub">“For each flagged device, compose a cost-</text>
+    <text x="480" y="530" text-anchor="middle" class="node-sub">benefit rationale and propose an action.”</text>
+    <text x="480" y="550" text-anchor="middle" class="node-sub" font-style="italic">→ fleet_underclock • schedule_maintenance • shutdown</text>
+
+    <!-- Left context: ML perception -->
+    <rect x="80" y="486" width="240" height="70" rx="5" fill="#ffffff" stroke="#a78bfa" stroke-width="1"/>
+    <text x="200" y="504" text-anchor="middle" class="node-title">ML Perception</text>
+    <text x="200" y="520" text-anchor="middle" class="node-sub">risk scores, tier, TE decomposition,</text>
+    <text x="200" y="533" text-anchor="middle" class="node-sub">projected failure horizon</text>
+    <text x="200" y="548" text-anchor="middle" class="artifact">fleet_status_query</text>
+
+    <!-- Right context: market + knowledge -->
+    <rect x="640" y="486" width="240" height="32" rx="5" fill="#ffffff" stroke="#a78bfa" stroke-width="1"/>
+    <text x="760" y="499" text-anchor="middle" class="node-title">Market Context</text>
+    <text x="760" y="512" text-anchor="middle" class="node-sub">BTC price, hashprice → web_search</text>
+
+    <rect x="640" y="524" width="240" height="32" rx="5" fill="#ffffff" stroke="#a78bfa" stroke-width="1"/>
+    <text x="760" y="537" text-anchor="middle" class="node-title">Organizational Context</text>
+    <text x="760" y="550" text-anchor="middle" class="node-sub">SOPs, team, SLAs → knowledge_query (RAG)</text>
+
+    <!-- Arrows into central agent -->
+    <line x1="320" y1="516" x2="340" y2="516" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow-ctx)"/>
+    <line x1="640" y1="502" x2="620" y2="510" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow-ctx)"/>
+    <line x1="640" y1="540" x2="620" y2="530" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow-ctx)"/>
+  </g>
+
+  <!-- Flow arrow: AI → Governance -->
+  <line x1="480" y1="576" x2="480" y2="614" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="490" y="599" class="flow-label">proposed action + reasoning</text>
+
+  <!-- ==================== 4. GOVERNANCE LAYER ==================== -->
+  <g>
+    <rect x="60" y="618" width="840" height="88" rx="8" fill="#fffbeb" stroke="#d97706" stroke-width="1.5"/>
+    <text x="80" y="638" class="layer-title">④ GOVERNANCE</text>
+    <text x="80" y="654" class="layer-sub">human-in-the-loop approval · learned policies · rate limits · tamper-evident audit chain</text>
+
+    <g>
+      <rect x="100" y="666" width="220" height="30" rx="4" fill="#ffffff" stroke="#d97706" stroke-width="1"/>
+      <text x="210" y="686" text-anchor="middle" class="node-sub">Approval gate (fail-closed)</text>
+
+      <rect x="370" y="666" width="220" height="30" rx="4" fill="#ffffff" stroke="#d97706" stroke-width="1"/>
+      <text x="480" y="686" text-anchor="middle" class="node-sub">Learned policies / trust profiles</text>
+
+      <rect x="640" y="666" width="220" height="30" rx="4" fill="#ffffff" stroke="#d97706" stroke-width="1"/>
+      <text x="750" y="686" text-anchor="middle" class="node-sub">Content-addressed audit trail</text>
+    </g>
+  </g>
+
+  <!-- Flow arrow: Governance → Execution -->
+  <line x1="480" y1="706" x2="480" y2="744" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="490" y="729" class="flow-label">approved command</text>
+
+  <!-- ==================== 5. COMMAND EXECUTION ==================== -->
+  <g>
+    <rect x="60" y="748" width="840" height="80" rx="8" fill="#fef2f2" stroke="#b91c1c" stroke-width="1.5"/>
+    <text x="80" y="768" class="layer-title">⑤ COMMAND EXECUTION — MOS RPC</text>
+    <text x="80" y="784" class="layer-sub">containerized execution inside MOS worker, bounded by deterministic safety overrides</text>
+
+    <g>
+      <rect x="100" y="796" width="170" height="24" rx="4" fill="#ffffff" stroke="#b91c1c" stroke-width="1"/>
+      <text x="185" y="812" text-anchor="middle" class="node-sub">setFrequency(pct)</text>
+
+      <rect x="290" y="796" width="170" height="24" rx="4" fill="#ffffff" stroke="#b91c1c" stroke-width="1"/>
+      <text x="375" y="812" text-anchor="middle" class="node-sub">setPowerMode(mode)</text>
+
+      <rect x="480" y="796" width="170" height="24" rx="4" fill="#ffffff" stroke="#b91c1c" stroke-width="1"/>
+      <text x="565" y="812" text-anchor="middle" class="node-sub">setFanControl(curve)</text>
+
+      <rect x="670" y="796" width="170" height="24" rx="4" fill="#ffffff" stroke="#b91c1c" stroke-width="1"/>
+      <text x="755" y="812" text-anchor="middle" class="node-sub">reboot / shutdown</text>
+    </g>
+  </g>
+
+  <!-- ==================== FEEDBACK LOOP ==================== -->
+  <path d="M 900 788 C 935 788, 935 100, 900 100" fill="none" stroke="#64748b" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+  <text x="952" y="444" class="caption" text-anchor="middle" transform="rotate(-90 952 444)">closed-loop: actions → next telemetry cycle</text>
+
+  <!-- ==================== LEGEND / CAPTION ==================== -->
+  <text x="480" y="860" text-anchor="middle" class="caption">
+    Separation of concerns: ML classifies (deterministic) · AI reasons (contextual) · Governance approves (auditable) · Safety overrides bound everything
+  </text>
+  <text x="480" y="878" text-anchor="middle" class="caption">
+    Every artifact is content-addressed; every proposed command is traceable end-to-end from telemetry through approval.
+  </text>
+</svg>
