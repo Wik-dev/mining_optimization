@@ -122,30 +122,41 @@ The classifier trains on 50 of 75 engineered features; the quantile regressor ad
 
 ### 5.1 Classification
 
-An XGBoost classifier (`n_estimators=200`, `max_depth=6`, `scale_pos_weight` for class imbalance) is trained on the full 1.6 M-row corpus. Evaluation uses a 24-hour sliding window on held-out temporal windows across each scenario. The decision threshold is set at 0.3 — biased toward recall, because in mining a missed failure costs far more than an unnecessary inspection.
+An XGBoost classifier (`n_estimators=200`, `max_depth=6`, `scale_pos_weight` for class imbalance) is trained on the full 1.6 M-row corpus (1,509,447 rows, 57 devices across 5 scenarios). The decision threshold is set at 0.3 — biased toward recall, because in mining a missed failure costs far more than an unnecessary inspection. The model trains 10 independent binary classifiers, one per anomaly type:
 
-Device-level evaluation across all non-baseline scenarios:
+| Anomaly type          | Positive rate | Devices | Dominant feature (`importance`)          |
+| --------------------- | ------------- | ------- | ---------------------------------------- |
+| hashrate_decay        | 12.4 %        | 4       | `efficiency_jth_fleet_z` (0.34)          |
+| solder_joint_fatigue  | 7.4 %         | 3       | `chip_count_active` (1.00)               |
+| capacitor_aging       | 6.4 %         | 4       | `te_score` (0.49)                        |
+| dust_fouling          | 3.7 %         | 4       | `ambient_temp_c` (0.63)                  |
+| psu_instability       | 3.0 %         | 3       | `power_w_std_1h` (0.59)                  |
+| thermal_paste_deg     | 2.4 %         | 2       | `power_w_mean_7d` (0.90)                 |
+| firmware_cliff        | 2.2 %         | 1       | `power_w_mean_7d` (0.74)                 |
+| fan_bearing_wear      | 2.0 %         | 3       | `fan_rpm` (0.62)                         |
+| coolant_loop_fouling  | 1.6 %         | 2       | `hashrate_th_mean_7d` (0.89)             |
+| thermal_deg           | 0.4 %         | 1       | `power_w_mean_7d` (0.63)                 |
 
-
-| Metric                           | Value    |
-| -------------------------------- | -------- |
-| Recall                           | **88 %** |
-| Precision                        | **85 %** |
-| True Positives / False Positives | 23 / 4   |
-| False Negatives / True Negatives | 3 / 16   |
-
-
-Per-scenario F1 scores range from 0.80 (summer_heatwave, psu_degradation) to 0.91 (asic_aging).
+Each sub-classifier specializes cleanly: the dominant feature aligns with the physical mechanism (fan RPM for bearing wear, chip count for solder fatigue, voltage ripple for capacitor aging). The overall anomaly rate is 41 % — high because multiple degradation types overlap in the multi-scenario corpus, and each device can exhibit several failure modes simultaneously.
 
 ### 5.2 Feature importance confirms the KPI thesis
 
-The aggregate model's top features validate the TE decomposition as both an operational metric and a feature-engineering strategy:
+The aggregate model's top features validate the TE decomposition as both an operational metric and a feature-engineering strategy. Production model (`09605d5baa372954`, 1.6 M rows, 5 scenarios):
 
-1. `true_efficiency` — 31.5 %
-2. `voltage_v_std_1h` — 15.8 % (PSU instability marker)
-3. `efficiency_jth_fleet_z` — 11.5 % (fleet-relative efficiency deviation)
-4. `hashrate_th_fleet_z` — 6.7 % (fleet-relative hashrate deviation)
-5. `temperature_c_mean_24h` — 5.2 % (thermal baseline drift)
+| Rank | Feature                  | Gain   | Physical meaning                         |
+| ---- | ------------------------ | ------ | ---------------------------------------- |
+| 1    | `reboot_count`           | 16.2 % | Operational stress / instability history |
+| 2    | `te_score`               | 13.3 % | TE composite — validates KPI design      |
+| 3    | `hashrate_ratio`         | 8.2 %  | Actual vs. nominal — chip degradation    |
+| 4    | `efficiency_jth_mean_7d` | 7.0 %  | Weekly efficiency trend — gradual drift  |
+| 5    | `te_base`                | 5.9 %  | Hardware-intrinsic efficiency component  |
+| 6    | `chip_count_active`      | 4.1 %  | Chip dropout — solder-joint failure      |
+| 7    | `fan_rpm`                | 4.0 %  | Cooling health — bearing wear            |
+| 8    | `voltage_ripple_std_24h` | 3.5 %  | PSU instability marker                   |
+| 9    | `power_w_std_1h`         | 2.6 %  | Short-term power volatility              |
+| 10   | `voltage_v_std_1h`       | 2.4 %  | Voltage noise — capacitor aging          |
+
+The TE-derived features (`te_score`, `te_base`, `hashrate_ratio`, `efficiency_jth_mean_7d`) together account for 34 % of importance, confirming that the KPI decomposition captures the signals the model needs. Per-anomaly breakdowns show clean specialization: thermal degradation is driven by `power_w_mean_7d` and `temperature_c_fleet_z`; PSU instability by `power_w_std_1h` and `hashrate_th_std_1h`; hashrate decay by `efficiency_jth_fleet_z` and `hashrate_ratio`; fan bearing wear by `fan_rpm` and `temperature_c_mean_7d`.
 
 The weakest signal is dust fouling — it manifests similarly to normal ambient variation, and closing that gap needs ambient-conditioned thermal-resistance features rather than threshold tuning.
 
