@@ -80,16 +80,15 @@ cd sdk-python && pip install -e . && cd ..
 # Register workflows with the Validance API
 python scripts/register_validance_workflows.py
 
+# Training (optional — a pre-trained model 09605d5baa372954 already exists)
+python scripts/orchestrate_training.py
+
 # Inference chain: pre_processing → score → analyze
-# --training-hash references pre-trained model artifacts (anomaly_model.joblib,
-# regression_model_v*.joblib) stored in the engine's artifact chain.
 python scripts/orchestrate_inference.py --training-hash 09605d5baa372954
 
 # Growing-window simulation (90 cycles)
 python scripts/orchestrate_simulation.py --scenario summer_heatwave --training-hash 09605d5baa372954
 ```
-
-The training chain (`python scripts/orchestrate_training.py`) requires the Docker images (`mdk-fleet-intelligence`, `fleet-control`) to be available on the engine host. The hash `09605d5baa372954` references a full training run (5 scenarios, 1.6M rows) already stored in the hosted instance.
 
 ### Run tests
 

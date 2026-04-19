@@ -109,14 +109,59 @@ def poll_completion(session: requests.Session, api_url: str,
 SCRIPTS_DIR = Path(__file__).resolve().parent
 
 
+def _resolve_corpus_from_chain(session: requests.Session, api_url: str,
+                                training_hash: str) -> tuple:
+    """Walk training → pre_processing → corpus chain to find telemetry URIs."""
+    current = training_hash
+    for _ in range(5):  # max chain depth
+        url = f"{api_url}/api/workflows/mdk.train/status?workflow_hash={current}"
+        resp = session.get(url, timeout=10)
+        if resp.status_code != 200:
+            # Try other workflow names
+            for wf in ["mdk.pre_processing", "mdk.generate_corpus"]:
+                url = f"{api_url}/api/workflows/{wf}/status?workflow_hash={current}"
+                resp = session.get(url, timeout=10)
+                if resp.status_code == 200:
+                    break
+        if resp.status_code != 200:
+            break
+        data = resp.json()
+        wf_name = data.get("workflow_name", "")
+
+        # If this is a corpus generation run, get its output file URIs
+        if wf_name == "mdk.generate_corpus":
+            vars_url = f"{api_url}/api/variables/{current}"
+            vr = session.get(vars_url, timeout=10)
+            if vr.status_code == 200:
+                vdata = vr.json()
+                variables = vdata.get("variables", vdata) if isinstance(vdata, dict) else vdata
+                telemetry = metadata = None
+                for var in variables:
+                    if var.get("variable_type") == "file":
+                        if var.get("variable_name") == "telemetry_csv":
+                            telemetry = var.get("file_uri")
+                        elif var.get("variable_name") == "metadata_json":
+                            metadata = var.get("file_uri")
+                if telemetry and metadata:
+                    return telemetry, metadata
+
+        # Follow continuation chain
+        parent = data.get("parameters", {}).get("continued_from")
+        if not parent:
+            break
+        current = parent
+
+    return None, None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Inference orchestrator (Pattern 1 chain)")
     parser.add_argument("--api-url", default="https://api.validance.io",
                         help="Validance API URL")
-    parser.add_argument("--telemetry-csv", required=True,
-                        help="Path/URI to telemetry CSV")
-    parser.add_argument("--metadata-json", required=True,
-                        help="Path/URI to fleet metadata JSON")
+    parser.add_argument("--telemetry-csv", default=None,
+                        help="Path/URI to telemetry CSV (default: resolved from training chain)")
+    parser.add_argument("--metadata-json", default=None,
+                        help="Path/URI to fleet metadata JSON (default: resolved from training chain)")
     parser.add_argument("--training-hash", required=True,
                         help="Workflow hash of the training run. Model artifacts "
                              "resolved via deep context (continue_from chain).")
@@ -139,6 +184,22 @@ def main():
     ).hexdigest()[:16]
 
     logger.info("Inference orchestration — session=%s", session_hash)
+
+    # ── Resolve telemetry inputs from training chain if not provided ──────
+    if not args.telemetry_csv or not args.metadata_json:
+        logger.info("Resolving telemetry inputs from training chain %s", args.training_hash)
+        telemetry_csv, metadata_json = _resolve_corpus_from_chain(
+            session, args.api_url, args.training_hash)
+        if not args.telemetry_csv:
+            args.telemetry_csv = telemetry_csv
+        if not args.metadata_json:
+            args.metadata_json = metadata_json
+        if not args.telemetry_csv or not args.metadata_json:
+            logger.error("Could not resolve telemetry inputs from training chain. "
+                         "Provide --telemetry-csv and --metadata-json explicitly.")
+            sys.exit(1)
+        logger.info("  telemetry: %s", args.telemetry_csv[:80])
+        logger.info("  metadata:  %s", args.metadata_json[:80])
 
     # ── Step 1: Pre-processing ─────────────────────────────────────────────
     # Chain from training_hash: puts training outputs (model artifacts) in the
