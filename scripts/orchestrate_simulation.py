@@ -258,6 +258,63 @@ def get_variable(session: requests.Session, api_url: str,
     return None
 
 
+# Scenario files pre-uploaded to Azure blob via POST /api/files/upload.
+# Same URIs used by the fleet-health-monitor UI.
+SCENARIO_URIS = {
+    "asic_aging": "azure://workflow-data/uploads/af45fc88-9253-43a7-8647-2f605f96cd4f/asic_aging.json",
+    "baseline": "azure://workflow-data/uploads/303ae2de-1e95-45c6-86f4-013c2c3533f2/baseline.json",
+    "cooling_failure": "azure://workflow-data/uploads/d5ac24a7-99f1-45c3-9b18-ada6d7dd912a/cooling_failure.json",
+    "psu_degradation": "azure://workflow-data/uploads/0ff17dca-42d7-4c9f-ac74-62b6a63a47c4/psu_degradation.json",
+    "summer_heatwave": "azure://workflow-data/uploads/c997e97c-1eb1-4ec7-b1b1-92e90e8b5227/summer_heatwave.json",
+}
+
+
+def _resolve_scenario_uri(scenario_arg: str) -> tuple:
+    """Resolve scenario argument to (azure_uri, scenario_dict).
+
+    Accepts a scenario name (e.g. 'summer_heatwave'), a local file path,
+    or an azure:// URI.
+    """
+    # Direct URI
+    if scenario_arg.startswith("azure://"):
+        # Can't read duration_days from Azure URI directly — caller handles
+        return scenario_arg, None
+
+    # Known scenario name
+    name = scenario_arg.replace(".json", "")
+    name = os.path.basename(name).replace("data/scenarios/", "")
+    if name in SCENARIO_URIS:
+        # Read local file for duration_days if available
+        local_candidates = [
+            f"data/scenarios/{name}.json",
+            scenario_arg,
+        ]
+        for path in local_candidates:
+            if os.path.exists(path):
+                with open(path) as f:
+                    return SCENARIO_URIS[name], json.load(f)
+        return SCENARIO_URIS[name], None
+
+    # Local file path — must exist
+    if os.path.exists(scenario_arg):
+        with open(scenario_arg) as f:
+            scenario = json.load(f)
+        # Check if filename matches a known scenario
+        basename = os.path.splitext(os.path.basename(scenario_arg))[0]
+        if basename in SCENARIO_URIS:
+            return SCENARIO_URIS[basename], scenario
+        raise ValueError(
+            f"Scenario file '{scenario_arg}' not in known URIs. "
+            f"Upload it first via POST /api/files/upload. "
+            f"Known: {', '.join(SCENARIO_URIS)}"
+        )
+
+    raise FileNotFoundError(
+        f"Scenario '{scenario_arg}' not found. "
+        f"Use a name ({', '.join(SCENARIO_URIS)}), a local path, or an azure:// URI."
+    )
+
+
 # ── Agent push helpers ────────────────────────────────────────────────────────
 
 def _notify_agent(gateway_url: str, gateway_token: str, message: str) -> bool:
@@ -307,10 +364,25 @@ def run_simulation(api_url: str, scenario_path: str, interval_days: int,
     http = requests.Session()
     http.headers["Content-Type"] = "application/json"
 
-    # Read scenario to get duration_days
-    with open(scenario_path) as f:
-        scenario = json.load(f)
-    duration_days = scenario["duration_days"]
+    # Resolve scenario to an engine-accessible azure:// URI.
+    # Container mode: CTX_SCENARIO_PATH is already an azure:// URI — pass through.
+    # CLI mode: resolve scenario name/path to a known azure:// URI.
+    original_scenario_uri = os.environ.get("CTX_SCENARIO_PATH")
+    if original_scenario_uri and ("://" in original_scenario_uri):
+        scenario_uri = original_scenario_uri
+        with open(scenario_path) as f:
+            scenario = json.load(f)
+    else:
+        scenario_uri, scenario = _resolve_scenario_uri(scenario_path)
+
+    # Read duration_days from scenario dict (local) or default
+    if scenario:
+        duration_days = scenario["duration_days"]
+    else:
+        # Scenario only as URI, no local file — use default
+        duration_days = 90
+        logger.warning("Could not read scenario locally, using default duration_days=%d", duration_days)
+
     total_cycles = math.ceil(duration_days / interval_days)
 
     # Inherit the outer workflow's session_hash when triggered via Pattern 5a
@@ -319,18 +391,6 @@ def run_simulation(api_url: str, scenario_path: str, interval_days: int,
     session_hash = os.environ.get("CTX_SESSION_HASH") or hashlib.sha256(
         f"simulation_{os.path.basename(scenario_path)}_{datetime.now().isoformat()}".encode()
     ).hexdigest()[:16]
-
-    # For inner workflow triggers, we need an engine-resolvable URI for the scenario.
-    # Pattern 5a: the original trigger parameter (CTX_SCENARIO_PATH) is already an
-    # engine-resolvable URI (file:// or azure://) — pass it through directly.
-    # Container-local paths like /work/simulation_orchestrator/scenario.json are
-    # NOT resolvable by the host engine.
-    # CLI mode: scenario_path is a local host path — convert to file:// URI.
-    original_scenario_uri = os.environ.get("CTX_SCENARIO_PATH")
-    if original_scenario_uri and ("://" in original_scenario_uri):
-        scenario_uri = original_scenario_uri
-    else:
-        scenario_uri = f"file://{os.path.abspath(scenario_path)}"
 
     metrics = SimulationMetrics(
         session_hash=session_hash,
