@@ -36,7 +36,7 @@ Trigger parameters (→ CTX_* env vars via ADR-005 §2.3):
 Author: Wiktor (MDK assignment, April 2026)
 """
 
-from validance.sdk import Task, Workflow
+from validance import Task, Workflow
 
 TASK_IMAGE = "autoregistry.azurecr.io/mdk-fleet-intelligence:latest"
 

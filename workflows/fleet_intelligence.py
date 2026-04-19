@@ -32,7 +32,7 @@ Orchestration scripts chain these:
 Author: Wiktor (MDK assignment, April 2026)
 """
 
-from validance.sdk import Task, Workflow
+from validance import Task, Workflow
 from workflows.fleet_simulation import create_workflow as create_fleet_simulation_workflow
 
 TASK_IMAGE = "autoregistry.azurecr.io/mdk-fleet-intelligence:latest"

@@ -29,7 +29,7 @@ pip install pandas numpy scikit-learn xgboost matplotlib pyarrow scipy joblib re
 
 ```bash
 # Single scenario (baseline, 10 devices, 30 days)
-python scripts/generate_training_corpus.py --scenario baseline
+python scripts/generate_training_corpus.py --scenario data/scenarios/baseline.json
 
 # Full training corpus (~1.6M rows, 5 scenarios)
 python scripts/generate_training_corpus.py --all
@@ -37,33 +37,46 @@ python scripts/generate_training_corpus.py --all
 
 ### Run the pipeline locally (no Docker)
 
-Each task is a standalone Python script that reads from and writes to the current directory:
+Each task is a standalone Python script that reads from and writes to its working directory (mirroring the `/work/` mount inside containers). All artifacts (parquets, models, JSONs, report) land in the same directory.
 
 ```bash
-cd data/pipeline
+mkdir -p data/pipeline && cd data/pipeline
+
+# Copy training data into the work directory (ingest expects these names)
+cp ../training/training_telemetry.csv fleet_telemetry.csv
+cp ../training/training_metadata.json fleet_metadata.json
+
+TASKS=../../tasks
 
 # Shared prefix: ingest → features → KPI
-python ../../tasks/ingest.py
-python ../../tasks/features.py
-python ../../tasks/kpi.py
+python $TASKS/ingest.py
+python $TASKS/features.py
+python $TASKS/kpi.py
 
 # Training path
-python ../../tasks/train_model.py
+python $TASKS/train_model.py
 
 # Inference path (requires trained model)
-python ../../tasks/score.py
+python $TASKS/score.py
 
 # Analysis
-python ../../tasks/trend_analysis.py
-python ../../tasks/optimize.py
-python ../../tasks/report.py          # → report.html
+python $TASKS/trend_analysis.py
+python $TASKS/optimize.py
+python $TASKS/report.py          # → report.html
+
+# Validation report (36 SR checks against requirements)
+python ../../scripts/generate_validation_report.py   # → validation-report.html
 ```
 
 ### Run via workflow engine (containerized)
 
 ```bash
+# Install the Validance SDK (zero dependencies, declaration only)
+git clone git@github.com:validance-io/sdk-python.git
+cd sdk-python && pip install -e . && cd ..
+
 # Register workflows with the Validance API
-PYTHONPATH=/path/to/validance-workflow python scripts/register_validance_workflows.py
+python scripts/register_validance_workflows.py
 
 # Training chain: generate_corpus (all scenarios) → pre_processing → train
 python scripts/orchestrate_training.py --all
