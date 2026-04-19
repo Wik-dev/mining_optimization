@@ -12,5 +12,6 @@ FROM python:3.11-slim
 
 COPY tasks/fleet_status.py /app/fleet_status.py
 COPY tasks/control_action.py /app/control_action.py
+COPY tasks/pipeline_status.py /app/pipeline_status.py
 
 WORKDIR /work

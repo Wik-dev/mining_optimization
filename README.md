@@ -10,6 +10,16 @@ Supervised ML detection + LLM reasoning agent + human-in-the-loop governance. De
 
 A sample pipeline report (summer_heatwave scenario, final cycle) is available at [`docs/sample-report.html`](docs/sample-report.html).
 
+### AI Agent — Telegram Interaction (Summer Heatwave Simulation)
+
+![Fleet status update — 4 flagged devices as ambient temperature rises](Screenshot_telegram_A.png)
+
+![Maintenance action plan — Tuesday window with staffing assignments](Screenshot_telegram_B.png)
+
+![Economic impact summary with seasonal cooling forecast](Screenshot_telegram_C.png)
+
+The simulation has progressed enough that ambient temperature rose from 15°C to 22°C (the summer heatwave scenario kicking in). The agent adapted its recommendations: the M66S units jumped from 61°C to 74°C and are now flagged, so it shifted from "monitor" to "proactive underclock before SOP-012 triggers." The agent combines real-time fleet telemetry, organizational knowledge (team roster, SOPs, parts inventory via RAG), and live market data (BTC price) into a concrete weekly maintenance schedule with per-device economic justification.
+
 ---
 
 ## Quick Start
@@ -86,6 +96,10 @@ python scripts/orchestrate_training.py
 # Inference chain: pre_processing → score → analyze
 python scripts/orchestrate_inference.py --training-hash 09605d5baa372954
 
+# With AI agent push (notifies OpenClaw when inference completes):
+python scripts/orchestrate_inference.py --training-hash 09605d5baa372954 \
+    --gateway-url http://172.18.0.1:19001 --gateway-token fleet-hook-2026
+
 # Growing-window simulation (90 cycles)
 python scripts/orchestrate_simulation.py --scenario summer_heatwave --training-hash 09605d5baa372954
 ```
@@ -121,6 +135,7 @@ mining_optimization/
 │   ├── report.py                   #   [7] HTML dashboard with charts
 │   ├── fleet_status.py             #   Fleet status query (used by AI agent)
 │   ├── control_action.py           #   Fleet control actions (underclock, maintenance)
+│   ├── pipeline_status.py          #   Query Validance API for latest pipeline run refs
 │   └── generate_batch.py           #   Batch data generation task
 │
 ├── scripts/                        # Orchestrators and standalone tools
@@ -200,6 +215,141 @@ This pipeline is a **client** of the Validance workflow engine. It does not depe
 | **AI Agent Plugin** | `safeclaw` | Bridges the LLM agent to the governance API (approval gate, learned policies) |
 | **AI Assistant** | `openclaw` | Personal AI assistant platform (hosts the reasoning agent) |
 | **This repo** | `mining_optimization` | Pipeline tasks, physics engine, orchestrators, knowledge corpus |
+
+---
+
+## AI Agent Loop
+
+The AI agent connects the ML pipeline to the operator. Two flows keep it in sync: **push** (simulation cycles notify the agent with fresh refs inline) and **pull** (the agent queries the Validance API for the latest pipeline run on manual queries).
+
+```mermaid
+sequenceDiagram
+    participant UI
+    participant Orchestrator
+    participant GW as Gateway / Webhook
+    participant Agent
+    participant API as Validance API
+    participant FT as Fleet Tools
+
+    UI->>Orchestrator: trigger mdk.fleet_simulation
+    Orchestrator->>Orchestrator: run simulation cycles
+
+    loop each cycle
+        Orchestrator->>GW: post cycle notification with refs
+        GW->>Agent: deliver webhook event
+        Agent->>Agent: extract session_hash + input_files
+        Agent->>FT: fleet_status_query(refs)
+        FT-->>Agent: risk scores / device status
+        Agent->>Agent: reason + propose actions
+    end
+
+    Note over Agent: Manual DM (no cycle notification)
+
+    Agent->>FT: fleet_pipeline_status
+    FT->>API: GET /api/runs?workflow_name=mdk.score&status=SUCCESS&limit=1
+    API-->>FT: latest score run + refs
+    FT-->>Agent: session_hash + input_files
+    Agent->>FT: fleet_status_query(refs)
+    FT-->>Agent: current fleet state
+```
+
+**Push path** — each simulation cycle posts a notification (with `session_hash` + `input_files`) to the gateway webhook. The agent extracts the refs and queries fleet status directly.
+
+**Pull path** — on manual DM queries (no cycle notification available), the agent calls `fleet_pipeline_status` which queries the Validance REST API for the latest successful `mdk.score` run and returns the current `session_hash` + `input_files` refs. No filesystem dependency — the agent always gets fresh data regardless of processing speed.
+
+---
+
+## AI Agent Configuration
+
+The AI reasoning agent runs on [OpenClaw](https://openclaw.ai/) with the [SafeClaw](../safeclaw/) plugin bridging it to the Validance governance API. Below is the configuration specific to this mining project.
+
+### OpenClaw (`~/.openclaw-dev/openclaw.json`)
+
+```jsonc
+{
+  "agents": {
+    "defaults": {
+      "model": { "primary": "anthropic/claude-opus-4-6" },
+      "workspace": "/root/.openclaw/workspace-dev",     // agent reads HEARTBEAT.md from here
+      "contextPruning": { "mode": "off" },              // agent reads fresh workspace files every turn
+      "heartbeat": {
+        "every": "10m",                                  // heartbeat interval (10m dev, 30m+ prod)
+        "target": "telegram",
+        "to": "<telegram_user_id>",                      // operator's Telegram user ID
+        "lightContext": true                              // only HEARTBEAT.md in bootstrap context
+      }
+    }
+  },
+  "hooks": {
+    "enabled": true,
+    "token": "<gateway-hook-token>",                     // must match --gateway-token in orchestrate_simulation.py
+    "allowedAgentIds": ["main"]
+  },
+  "plugins": {
+    "allow": ["safeclaw", "telegram", "anthropic"],
+    "load": { "paths": ["<path-to-safeclaw-repo>"] },
+    "entries": {
+      "safeclaw": {
+        "enabled": true,
+        "config": {
+          "kernelUrl": "http://localhost:8000",           // Validance prod API
+          "trustProfile": "standard",                     // auto-approve reads, human-confirm writes
+          "gatewayPort": 19001,                           // gateway port for approval webhooks
+          "gatewayHost": "172.18.0.1"                     // Docker bridge IP (container → host)
+        }
+      }
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "botToken": "<telegram-bot-token>"                 // @SafeClowBot
+    }
+  },
+  "gateway": {
+    "port": 19001,                                       // orchestrator posts cycle notifications here
+    "bind": "lan"
+  }
+}
+```
+
+### Workspace files (`/root/.openclaw/workspace-dev/`)
+
+| File | Purpose |
+|------|---------|
+| `HEARTBEAT.md` | Agent instructions — the reasoning chain (Steps A–D), rules, tool call examples |
+| `BOOTSTRAP.md` | Agent identity setup (first-run only) |
+
+### SafeClaw plugin config (`safeclaw/`)
+
+The plugin reads `workspacePath` from `api.config.agents.defaults.workspace` and passes it as a volume mount on every proposal.
+
+**Trust profile: `standard`** — determines which actions auto-approve vs require human confirmation:
+
+| Auto-approve | Human-confirm |
+|-------------|---------------|
+| `fleet_status_query`, `fleet_pipeline_status`, `web_search`, `knowledge_query` | `fleet_underclock`, `fleet_schedule_maintenance`, `fleet_emergency_shutdown` |
+
+### Validance catalog templates (fleet-specific)
+
+| Template | Image | Approval | Workspace | Purpose |
+|----------|-------|----------|-----------|---------|
+| `fleet_status_query` | `fleet-control` | auto | yes | Query risk scores, tier breakdown, device details |
+| `fleet_pipeline_status` | `fleet-control` | auto | no | Query Validance API for latest pipeline run refs |
+| `fleet_underclock` | `fleet-control` | human-confirm | yes | Reduce device clock speed (% of stock) |
+| `fleet_schedule_maintenance` | `fleet-control` | human-confirm | yes | Schedule inspection or repair |
+| `fleet_emergency_shutdown` | `fleet-control` | human-confirm | yes | Emergency device shutdown |
+
+### Orchestrator → agent connection
+
+The simulation orchestrator (`scripts/orchestrate_simulation.py`) notifies the agent after each cycle:
+
+```
+--gateway-url http://172.18.0.1:19001    # gateway webhook endpoint
+--gateway-token <gateway-hook-token>     # must match hooks.token in openclaw.json
+```
+
+This posts to `POST /hooks/agent` with the cycle notification message containing `session_hash` and `input_files` refs. The agent then follows `HEARTBEAT.md` to assess, reason, and propose actions.
 
 ---
 
