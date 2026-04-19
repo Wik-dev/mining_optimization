@@ -21,7 +21,7 @@ This project addresses both problems with one pipeline. A supervised ML layer id
 
 Three functional layers sit between the fleet and the MOS control plane. Each layer has one responsibility and communicates with the next through typed artifacts. The boundaries are the safety story: **ML classifies (deterministic), AI reasons (contextual), Governance approves (auditable), Hard-coded safety overrides bound everything.**
 
-![Fleet Intelligence — End-to-End Architecture](architecture.svg)
+![Fleet Intelligence — End-to-End Architecture](assets/architecture.svg)
 
 **① Hardware** emits raw telemetry every 5 minutes: hashrate, power, voltage, clock, chip temperature, cooling power, and ambient temperature. In production this comes from MOS workers (`miningos-wrk-miner-antminer`) via Hyperbee time-series; in this prototype it comes from a physics-based generator.
 
@@ -189,7 +189,7 @@ After each scoring cycle, the orchestrator notifies the LLM agent with the pipel
 
 The agent submits the proposal through the governance API with the pipeline's session hash, so ML evidence and AI proposal appear together in the operator dashboard.
 
-![AI agent proposals in the operator dashboard — underclock and maintenance actions with cost-benefit reasoning](Screenshot_AI_proposals.png)
+![AI agent proposals in the operator dashboard — underclock and maintenance actions with cost-benefit reasoning](assets/Screenshot_AI_proposals.png)
 
 ---
 
@@ -198,7 +198,7 @@ The agent submits the proposal through the governance API with the pipeline's se
 - **Failure prevention.** Early-warning signals (days before critical failure) let the operator schedule underclocking or maintenance instead of absorbing the full cost of a failed PSU, fouled heatsink, or burned-out capacitor.
 - **Corrected comparisons.** TE makes heterogeneous devices and sites comparable for the first time. The same metric works across the hydro-cooled northern site and air-cooled southern site; operators can decide where to deploy new hardware on real data, not J/TH marketing numbers.
 - **Quantified trade-offs.** Every proposed action comes with an explicit $/day calculation built from current BTC price, current efficiency loss, and current power cost. Underclocking is no longer a judgment call — it is a net-positive economic decision with a number on it.
-- **Zero approval fatigue at scale.** Learned policies let the operator automate recurring safe patterns ("always approve underclock to 80 % for S19jPro when risk > 0.9") while preserving the audit trail and the human veto.
+- **Zero approval fatigue at scale.** Learned policies let the operator automate recurring safe patterns ("always approve underclock to 80 % for S19jPro when risk > 0.9") while preserving the audit trail and the human veto. Approvals reach the operator through both a web dashboard and a Telegram bot, because PSU alerts don't wait until the operator is at a desk.
 
 ---
 
@@ -213,7 +213,7 @@ An autonomous agent that can underclock, overclock, or shut down mining hardware
 5. **Content-addressed audit chain.** Every workflow execution is identified by a SHA-256 over its code, parameters, and inputs. Every agent proposal is logged with the input state that triggered it, the approval decision, and the execution result. Retroactively changing any input breaks the chain.
 6. **Adversarial robustness via fleet-relative features.** A compromised device reporting falsified telemetry diverges from its same-model peers — the z-score features detect this rather than being deceived by it. The residual risk is fleet-wide sensor drift, which is acknowledged and out-of-scope for this iteration.
 
-![Safety override in action — ASIC-006 flagged WARNING with hard thermal limit triggered at 82.5 °C](Screenshot_detected_warning.png)
+![Safety override in action — ASIC-006 flagged WARNING with hard thermal limit triggered at 82.5 °C](assets/Screenshot_detected_warning.png)
 
 ---
 

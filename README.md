@@ -201,7 +201,7 @@ mining_optimization/
 ⑤ MOS Command Execution          setFrequency, setPowerMode, reboot
 ```
 
-See [`docs/architecture.svg`](docs/architecture.svg) for the full diagram.
+See [`docs/assets/architecture.svg`](docs/assets/architecture.svg) for the full diagram.
 
 ---
 
@@ -360,7 +360,7 @@ This posts to `POST /hooks/agent` with the cycle notification message containing
 | Document | Contents |
 |----------|----------|
 | [`docs/technical-report.md`](docs/technical-report.md) | Technical report (assignment deliverable) |
-| [`docs/architecture.svg`](docs/architecture.svg) | End-to-end architecture diagram |
+| [`docs/assets/architecture.svg`](docs/assets/architecture.svg) | End-to-end architecture diagram |
 | [`docs/architecture-diagram.md`](docs/architecture-diagram.md) | Architecture diagram (ASCII, detailed) |
 | [`docs/validation-report.html`](docs/validation-report.html) | Validation report — 36 SR checks against requirements |
 
