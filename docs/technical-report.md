@@ -21,7 +21,7 @@ This project addresses both problems with one pipeline. A supervised ML layer id
 
 Three functional layers sit between the fleet and the MOS control plane. Each layer has one responsibility and communicates with the next through typed artifacts. The boundaries are the safety story: **ML classifies (deterministic), AI reasons (contextual), Governance approves (auditable), Hard-coded safety overrides bound everything.**
 
-Fleet Intelligence — End-to-End Architecture
+![Fleet Intelligence — End-to-End Architecture](architecture.svg)
 
 **① Hardware** emits raw telemetry every 5 minutes: hashrate, power, voltage, clock, chip temperature, cooling power, and ambient temperature. In production this comes from MOS workers (`miningos-wrk-miner-antminer`) via Hyperbee time-series; in this prototype it comes from a physics-based generator.
 
@@ -139,9 +139,28 @@ An XGBoost classifier (`n_estimators=200`, `max_depth=6`, `scale_pos_weight` for
 
 Each sub-classifier specializes cleanly: the dominant feature aligns with the physical mechanism (fan RPM for bearing wear, chip count for solder fatigue, voltage ripple for capacitor aging). The overall anomaly rate is 41 % — high because multiple degradation types overlap in the multi-scenario corpus, and each device can exhibit several failure modes simultaneously.
 
+Full-fleet validation (see `docs/validation-report.html`) scores all 1.5 M rows against ground-truth labels from the physics engine:
+
+| Granularity  | Precision | Recall | F1    | TP      | TN      | FP     | FN    |
+| ------------ | --------- | ------ | ----- | ------- | ------- | ------ | ----- |
+| Device-level | 1.000     | 1.000  | 1.000 | 27      | 30      | 0      | 0     |
+| Sample-level | 0.983     | 0.998  | 0.990 | 621 429 | 875 949 | 10 519 | 1 550 |
+
+All 27 anomalous devices are correctly flagged across all 5 scenarios with zero false positives and zero false negatives at device level. The 10 519 sample-level false positives cluster in healthy devices under environmental stress (summer heatwave); the 1 550 false negatives occur during early anomaly onset before degradation reaches detectable intensity.
+
+**Early detection.** The model detects anomalies *before* the physics engine's ground-truth label activates — it catches the precursor signal:
+
+| Metric                   | Value       |
+| ------------------------ | ----------- |
+| Mean detection lead time | **321.7 h** (~13.4 days early) |
+| Median lead time         | **241.5 h** (~10 days early)   |
+| Worst case               | **0.0 h** (detected at onset)  |
+
+Gradual-onset anomalies (`capacitor_aging`, `psu_instability`) have shorter lead times because the signal builds slowly. Acute failures (`solder_joint_fatigue`, `fan_bearing_wear`) are caught earlier because their signatures are abrupt and unambiguous.
+
 ### 5.2 Feature importance confirms the KPI thesis
 
-The aggregate model's top features validate the TE decomposition as both an operational metric and a feature-engineering strategy. Production model (`09605d5baa372954`, 1.6 M rows, 5 scenarios):
+The aggregate model's top features validate the TE decomposition as a feature-engineering strategy — TE-derived features (`te_score`, `te_base`, `hashrate_ratio`, `efficiency_jth_mean_7d`) account for 34 % of total predictive gain:
 
 | Rank | Feature                  | Gain   | Physical meaning                         |
 | ---- | ------------------------ | ------ | ---------------------------------------- |
@@ -156,13 +175,11 @@ The aggregate model's top features validate the TE decomposition as both an oper
 | 9    | `power_w_std_1h`         | 2.6 %  | Short-term power volatility              |
 | 10   | `voltage_v_std_1h`       | 2.4 %  | Voltage noise — capacitor aging          |
 
-The TE-derived features (`te_score`, `te_base`, `hashrate_ratio`, `efficiency_jth_mean_7d`) together account for 34 % of importance, confirming that the KPI decomposition captures the signals the model needs. Per-anomaly breakdowns show clean specialization: thermal degradation is driven by `power_w_mean_7d` and `temperature_c_fleet_z`; PSU instability by `power_w_std_1h` and `hashrate_th_std_1h`; hashrate decay by `efficiency_jth_fleet_z` and `hashrate_ratio`; fan bearing wear by `fan_rpm` and `temperature_c_mean_7d`.
-
 The weakest signal is dust fouling — it manifests similarly to normal ambient variation, and closing that gap needs ambient-conditioned thermal-resistance features rather than threshold tuning.
 
 ### 5.3 Forward-looking predictions
 
-Alongside the classifier, a set of quantile regressors produces horizon predictions (p10 / p50 / p90) at t + 1 h, 6 h, 24 h, and 7 d. The trend analysis task adds OLS slopes, EWMA trends, CUSUM regime-change detection, and projected TE-threshold crossings. This is what turns the system from "alerting" to **forecasting**: for each degrading device, the agent receives a projected failure horizon with a confidence band, not just a probability.
+Alongside the classifier, a set of quantile regressors produces TE forecasts at four horizons (t + 1 h, 6 h, 24 h, 7 d) with 80 % prediction intervals (p10 / p50 / p90). The trend analysis task adds CUSUM regime-change detection and projected TE-threshold crossings. In validation, 7 of 14 devices in the scoring window were correctly predicted to remain below the TE = 0.8 degraded threshold across all horizons, with narrow prediction intervals (typical width 0.02–0.08) indicating confident forecasts. This turns the system from "alerting" to **forecasting**: the agent receives a projected failure horizon with a confidence band, not just a current probability.
 
 ### 5.4 The AI reasoning loop
 
