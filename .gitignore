@@ -20,6 +20,9 @@ data/training/
 data/validance_run/
 data/models/
 
+# Internal docs (local only)
+docs/internal/
+
 # Claude Code project instructions (local only)
 CLAUDE.md
 
