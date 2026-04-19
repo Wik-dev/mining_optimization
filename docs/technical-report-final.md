@@ -1,39 +1,13 @@
-# AI-Driven Mining Optimization and Predictive Maintenance: A Three-Layer Architecture with Physics-Informed Efficiency Metrics
-
-**Technical Report — MDK Assignment (Tether)**
-
-Wiktor Lisowski
-
-April 2026
-
+---
+title: "AI-Driven Mining Optimization and Predictive Maintenance: A Three-Layer Architecture with Physics-Informed Efficiency Metrics"
+subtitle: "Technical Report — MDK Assignment (Tether)"
+author: "Wiktor Lisowski"
+date: "April 2026"
 ---
 
 ## Abstract
 
 Bitcoin mining profitability is dominated by marginal gains in energy efficiency and by the avoidance of unplanned hardware failures, yet most operators rely on the naive joules-per-terahash (J/TH) metric and reactive maintenance. We present a three-layer fleet intelligence architecture that addresses both limitations through a single pipeline: (i) a deterministic ML detection layer that ingests ASIC telemetry, engineers physics-informed features, computes a composite **True Efficiency (TE)** key performance indicator, and classifies device health; (ii) a contextual AI reasoning layer that synthesizes ML perception with market and organizational signals to propose justified corrective actions; and (iii) a governance layer that enforces human approval, learned policies, and a tamper-evident audit trail before any action reaches hardware. TE is defined as a decomposition separating hardware-intrinsic efficiency, voltage inefficiency, and cooling overhead, each mapping to a distinct failure mode. A supervised XGBoost ensemble trained on 1.5 M rows of physics-based synthetic telemetry achieves device-level precision and recall of 1.00 across 57 devices and 5 scenarios, with a mean detection lead time of **321.7 hours (≈ 13.4 days)** before the ground-truth failure label activates. We discuss operational benefits, the security implications of an autonomous optimization agent, and a defense-in-depth posture built around hard-coded safety overrides that bound every upstream decision.
-
----
-
-## Table of Contents
-
-1. [Problem Statement](#1-problem-statement)
-2. [System Architecture](#2-system-architecture)
-3. [The True Efficiency KPI](#3-the-true-efficiency-kpi)
-   - 3.1 [Limitations of naive J/TH](#31-limitations-of-naive-jth)
-   - 3.2 [Formulation](#32-formulation)
-   - 3.3 [Diagnostic decomposition](#33-diagnostic-decomposition)
-4. [Data Pipeline](#4-data-pipeline)
-   - 4.1 [Synthetic dataset](#41-synthetic-dataset)
-   - 4.2 [Feature engineering](#42-feature-engineering)
-5. [AI Layer and Results](#5-ai-layer-and-results)
-   - 5.1 [Classification](#51-classification)
-   - 5.2 [Feature importance](#52-feature-importance)
-   - 5.3 [Forward-looking predictions](#53-forward-looking-predictions)
-   - 5.4 [The AI reasoning loop](#54-the-ai-reasoning-loop)
-6. [Operational Benefits](#6-operational-benefits)
-7. [Security and Safety](#7-security-and-safety)
-8. [Future Work](#8-future-work)
-9. [Repository and Artifacts](#9-repository-and-artifacts)
 
 ---
 
