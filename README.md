@@ -70,6 +70,8 @@ python ../../scripts/generate_validation_report.py   # → validation-report.htm
 
 ### Run via workflow engine (containerized)
 
+The pipeline can be orchestrated by a [Validance](https://validance.io) instance, adding content-addressed audit trails, container isolation, and artifact management. A hosted instance is available at `https://api.validance.io` with pre-trained model artifacts.
+
 ```bash
 # Install the Validance SDK (zero dependencies, declaration only)
 git clone git@github.com:validance-io/sdk-python.git
@@ -78,18 +80,16 @@ cd sdk-python && pip install -e . && cd ..
 # Register workflows with the Validance API
 python scripts/register_validance_workflows.py
 
-# Training chain: generate_corpus (all scenarios) → pre_processing → train
-python scripts/orchestrate_training.py --all
-
 # Inference chain: pre_processing → score → analyze
-# --training-hash is the workflow hash from the training run above.
-# The engine resolves model artifacts (anomaly_model.joblib, regression_model_v*.joblib)
-# from that hash via the continue_from chain — no filesystem paths needed.
+# --training-hash references pre-trained model artifacts (anomaly_model.joblib,
+# regression_model_v*.joblib) stored in the engine's artifact chain.
 python scripts/orchestrate_inference.py --training-hash 09605d5baa372954
 
 # Growing-window simulation (90 cycles)
 python scripts/orchestrate_simulation.py --scenario summer_heatwave --training-hash 09605d5baa372954
 ```
+
+The training chain (`python scripts/orchestrate_training.py`) requires the Docker images (`mdk-fleet-intelligence`, `fleet-control`) to be available on the engine host. The hash `09605d5baa372954` references a full training run (5 scenarios, 1.6M rows) already stored in the hosted instance.
 
 ### Run tests
 
