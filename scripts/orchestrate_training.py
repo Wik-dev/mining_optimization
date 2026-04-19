@@ -87,17 +87,25 @@ def poll_completion(session: requests.Session, api_url: str,
 
 
 def get_file_url(session: requests.Session, api_url: str,
-                 workflow_hash: str, file_name: str) -> str | None:
-    """Get the storage URI for a workflow output file."""
+                 workflow_hash: str, file_name: str,
+                 retries: int = 6, delay: float = 5.0) -> str | None:
+    """Get the storage URI for a workflow output file.
+
+    Retries because large file uploads (e.g. 300 MB CSV) may still be
+    in flight when the workflow status flips to 'success'.
+    """
     url = f"{api_url}/api/files/{workflow_hash}"
-    try:
-        resp = session.get(url, timeout=10)
-        if resp.status_code == 200:
-            for f in resp.json().get("files", []):
-                if f.get("file_name") == file_name and f.get("is_output"):
-                    return f.get("uri", "")
-    except (ConnectionError, OSError):
-        pass
+    for attempt in range(retries):
+        try:
+            resp = session.get(url, timeout=10)
+            if resp.status_code == 200:
+                for f in resp.json().get("files", []):
+                    if f.get("file_name") == file_name and f.get("is_output"):
+                        return f.get("uri", "")
+        except (ConnectionError, OSError):
+            pass
+        if attempt < retries - 1:
+            time.sleep(delay)
     return None
 
 
