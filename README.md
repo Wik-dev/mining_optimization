@@ -4,19 +4,19 @@ AI-driven fleet intelligence for Bitcoin mining operations.
 
 Supervised ML detection + LLM reasoning agent + human-in-the-loop governance. Detects hardware degradation days before failure, proposes cost-justified corrective actions, and enforces operator approval before anything touches hardware.
 
-![Fleet control dashboard — tier evolution, hashrate, TE score, risk heatmap](Screenshot_Fleet_Control.png)
+![Fleet control dashboard — tier evolution, hashrate, TE score, risk heatmap](docs/assets/Screenshot_Fleet_Control.png)
 
-![Per-device commands with tier classification and safety overrides](Screenshot_Command_details.png)
+![Per-device commands with tier classification and safety overrides](docs/assets/Screenshot_Command_details.png)
 
-A sample pipeline report (summer_heatwave scenario, final cycle) is available at [`docs/sample-report.html`](docs/sample-report.html).
+A sample pipeline report (summer_heatwave scenario, final cycle) is available at [`example_output_report/sample-report.html`](example_output_report/sample-report.html).
 
 ### AI Agent — Telegram Interaction (Summer Heatwave Simulation)
 
-![Fleet status update — 4 flagged devices as ambient temperature rises](Screenshot_telegram_A.png)
+![Fleet status update — 4 flagged devices as ambient temperature rises](docs/assets/Screenshot_telegram_A.png)
 
-![Maintenance action plan — Tuesday window with staffing assignments](Screenshot_telegram_B.png)
+![Maintenance action plan — Tuesday window with staffing assignments](docs/assets/Screenshot_telegram_B.png)
 
-![Economic impact summary with seasonal cooling forecast](Screenshot_telegram_C.png)
+![Economic impact summary with seasonal cooling forecast](docs/assets/Screenshot_telegram_C.png)
 
 The simulation has progressed enough that ambient temperature rose from 15°C to 22°C (the summer heatwave scenario kicking in). The agent adapted its recommendations: the M66S units jumped from 61°C to 74°C and are now flagged, so it shifted from "monitor" to "proactive underclock before SOP-012 triggers." The agent combines real-time fleet telemetry, organizational knowledge (team roster, SOPs, parts inventory via RAG), and live market data (BTC price) into a concrete weekly maintenance schedule with per-device economic justification.
 
@@ -211,10 +211,10 @@ This pipeline is a **client** of the Validance workflow engine. It does not depe
 
 | Layer | Repository | Role |
 |-------|-----------|------|
-| **Workflow Engine** | `validance-workflow` | Executes tasks in containers, manages artifacts, content-addressed audit chain |
-| **AI Agent Plugin** | `safeclaw` | Bridges the LLM agent to the governance API (approval gate, learned policies) |
-| **AI Assistant** | `openclaw` | Personal AI assistant platform (hosts the reasoning agent) |
-| **This repo** | `mining_optimization` | Pipeline tasks, physics engine, orchestrators, knowledge corpus |
+| **Workflow Engine** | [`validance-io/sdk-python`](https://github.com/validance-io/sdk-python) | Executes tasks in containers, manages artifacts, content-addressed audit chain |
+| **AI Agent Plugin** | [`safeclaw`](https://github.com/Wik-dev/safeclaw) | Bridges the LLM agent to the governance API (approval gate, learned policies) |
+| **AI Assistant** | [`openclaw`](https://github.com/openclaw/openclaw) | Personal AI assistant platform (hosts the reasoning agent) |
+| **This repo** | [`mining_optimization`](https://github.com/Wik-dev/mining_optimization) | Pipeline tasks, physics engine, orchestrators, knowledge corpus |
 
 ---
 
@@ -259,100 +259,6 @@ sequenceDiagram
 
 ---
 
-## AI Agent Configuration
-
-The AI reasoning agent runs on [OpenClaw](https://openclaw.ai/) with the [SafeClaw](../safeclaw/) plugin bridging it to the Validance governance API. Below is the configuration specific to this mining project.
-
-### OpenClaw (`~/.openclaw-dev/openclaw.json`)
-
-```jsonc
-{
-  "agents": {
-    "defaults": {
-      "model": { "primary": "anthropic/claude-opus-4-6" },
-      "workspace": "/root/.openclaw/workspace-dev",     // agent reads HEARTBEAT.md from here
-      "contextPruning": { "mode": "off" },              // agent reads fresh workspace files every turn
-      "heartbeat": {
-        "every": "10m",                                  // heartbeat interval (10m dev, 30m+ prod)
-        "target": "telegram",
-        "to": "<telegram_user_id>",                      // operator's Telegram user ID
-        "lightContext": true                              // only HEARTBEAT.md in bootstrap context
-      }
-    }
-  },
-  "hooks": {
-    "enabled": true,
-    "token": "<gateway-hook-token>",                     // must match --gateway-token in orchestrate_simulation.py
-    "allowedAgentIds": ["main"]
-  },
-  "plugins": {
-    "allow": ["safeclaw", "telegram", "anthropic"],
-    "load": { "paths": ["<path-to-safeclaw-repo>"] },
-    "entries": {
-      "safeclaw": {
-        "enabled": true,
-        "config": {
-          "kernelUrl": "http://localhost:8000",           // Validance prod API
-          "trustProfile": "standard",                     // auto-approve reads, human-confirm writes
-          "gatewayPort": 19001,                           // gateway port for approval webhooks
-          "gatewayHost": "172.18.0.1"                     // Docker bridge IP (container → host)
-        }
-      }
-    }
-  },
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "botToken": "<telegram-bot-token>"                 // @SafeClowBot
-    }
-  },
-  "gateway": {
-    "port": 19001,                                       // orchestrator posts cycle notifications here
-    "bind": "lan"
-  }
-}
-```
-
-### Workspace files (`/root/.openclaw/workspace-dev/`)
-
-| File | Purpose |
-|------|---------|
-| `HEARTBEAT.md` | Agent instructions — the reasoning chain (Steps A–D), rules, tool call examples |
-| `BOOTSTRAP.md` | Agent identity setup (first-run only) |
-
-### SafeClaw plugin config (`safeclaw/`)
-
-The plugin reads `workspacePath` from `api.config.agents.defaults.workspace` and passes it as a volume mount on every proposal.
-
-**Trust profile: `standard`** — determines which actions auto-approve vs require human confirmation:
-
-| Auto-approve | Human-confirm |
-|-------------|---------------|
-| `fleet_status_query`, `fleet_pipeline_status`, `web_search`, `knowledge_query` | `fleet_underclock`, `fleet_schedule_maintenance`, `fleet_emergency_shutdown` |
-
-### Validance catalog templates (fleet-specific)
-
-| Template | Image | Approval | Workspace | Purpose |
-|----------|-------|----------|-----------|---------|
-| `fleet_status_query` | `fleet-control` | auto | yes | Query risk scores, tier breakdown, device details |
-| `fleet_pipeline_status` | `fleet-control` | auto | no | Query Validance API for latest pipeline run refs |
-| `fleet_underclock` | `fleet-control` | human-confirm | yes | Reduce device clock speed (% of stock) |
-| `fleet_schedule_maintenance` | `fleet-control` | human-confirm | yes | Schedule inspection or repair |
-| `fleet_emergency_shutdown` | `fleet-control` | human-confirm | yes | Emergency device shutdown |
-
-### Orchestrator → agent connection
-
-The simulation orchestrator (`scripts/orchestrate_simulation.py`) notifies the agent after each cycle:
-
-```
---gateway-url http://172.18.0.1:19001    # gateway webhook endpoint
---gateway-token <gateway-hook-token>     # must match hooks.token in openclaw.json
-```
-
-This posts to `POST /hooks/agent` with the cycle notification message containing `session_hash` and `input_files` refs. The agent then follows `HEARTBEAT.md` to assess, reason, and propose actions.
-
----
-
 ## Documentation
 
 ### Deliverables
@@ -368,11 +274,8 @@ This posts to `POST /hooks/agent` with the cycle notification message containing
 
 | Document | Contents |
 |----------|----------|
-| [`docs/system-overview.md`](docs/system-overview.md) | System overview, data flow, controller tiers, tech stack |
 | [`docs/code-documentation.md`](docs/code-documentation.md) | Per-file code documentation |
 | [`docs/feature-catalog.md`](docs/feature-catalog.md) | Complete feature catalog (75 features, computation, rationale) |
-| [`docs/true-efficiency-kpi.md`](docs/true-efficiency-kpi.md) | True Efficiency KPI formulation and decomposition |
-| [`docs/evaluation-analysis.md`](docs/evaluation-analysis.md) | Model evaluation, threshold analysis |
 | [`docs/user-guide.md`](docs/user-guide.md) | Operational user guide |
 | [`docs/requirements.md`](docs/requirements.md) | Functional and non-functional requirements |
 

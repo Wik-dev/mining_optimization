@@ -23,15 +23,15 @@ Three functional layers sit between the fleet and the MOS control plane. Each la
 
 ![Fleet Intelligence — End-to-End Architecture](assets/architecture.svg)
 
-**① Hardware** emits raw telemetry every 5 minutes: hashrate, power, voltage, clock, chip temperature, cooling power, and ambient temperature. In production this comes from MOS workers (`miningos-wrk-miner-antminer`) via Hyperbee time-series; in this prototype it comes from a physics-based generator.
+**(1) Hardware** emits raw telemetry every 5 minutes: hashrate, power, voltage, clock, chip temperature, cooling power, and ambient temperature. In production this comes from MOS workers (`miningos-wrk-miner-antminer`) via Hyperbee time-series; in this prototype it comes from a physics-based generator.
 
-**② ML Detection Pipeline** is a 7-task DAG: ingest → features → KPI → train/score → trends → optimize → report. Every task runs inside a container, reads and writes to a shared `/work/` directory, and emits content-addressed artifacts. Any task can be rerun in isolation; every rerun produces a new session hash that links its output to its exact inputs, code, and parameters.
+**(2) ML Detection Pipeline** is a 7-task DAG: ingest → features → KPI → train/score → trends → optimize → report. Every task runs inside a container, reads and writes to a shared `/work/` directory, and emits content-addressed artifacts. Any task can be rerun in isolation; every rerun produces a new session hash that links its output to its exact inputs, code, and parameters.
 
-**③ AI Reasoning** is an LLM agent that wakes up at the end of each pipeline cycle and gathers three complementary context layers before proposing anything: *ML perception* (risk scores, tier, TE decomposition, projected failure horizon) from the pipeline, *market context* (BTC price, hashprice) from web search, and *organizational context* (SOPs, team availability, hardware specs, financial constraints) from a single-shot RAG query over an indexed corpus of company documents. The agent does not read files directly — all data flows through the same governed API it uses to submit proposals.
+**(3) AI Reasoning** is an LLM agent that wakes up at the end of each pipeline cycle and gathers three complementary context layers before proposing anything: *ML perception* (risk scores, tier, TE decomposition, projected failure horizon) from the pipeline, *market context* (BTC price, hashprice) from web search, and *organizational context* (SOPs, team availability, hardware specs, financial constraints) from a single-shot RAG query over an indexed corpus of company documents. The agent does not read files directly — all data flows through the same governed API it uses to submit proposals.
 
-**④ Governance** is a human-in-the-loop approval gate with learned policies, per-session rate limits, and a tamper-evident audit trail. Read-only queries auto-approve under a standard profile; anything that changes hardware state requires human confirmation or a standing policy the operator created.
+**(4) Governance** is a human-in-the-loop approval gate with learned policies, per-session rate limits, and a tamper-evident audit trail. Read-only queries auto-approve under a standard profile; anything that changes hardware state requires human confirmation or a standing policy the operator created.
 
-**⑤ Command Execution** is a thin MOS RPC layer: `setFrequency`, `setPowerMode`, `setFanControl`, `reboot`. Critically, MOS does not expose direct voltage control — voltage is coupled to frequency through the ASIC's V/f curve, so all safety reasoning has to be done in frequency-space.
+**(5) Command Execution** is a thin MOS RPC layer: `setFrequency`, `setPowerMode`, `setFanControl`, `reboot`. Critically, MOS does not expose direct voltage control — voltage is coupled to frequency through the ASIC's V/f curve, so all safety reasoning has to be done in frequency-space.
 
 ---
 
@@ -226,7 +226,31 @@ An autonomous agent that can underclock, overclock, or shut down mining hardware
 
 ---
 
-**Repository layout:**
-`tasks/` (pipeline tasks) · `scripts/` (orchestrators, physics engine) · `workflows/` (DAG declarations) · `docs/` (this report, KPI spec, MOS audit, requirements).
+### Repository layout
 
-**Workflows:** `mdk.pre_processing`, `mdk.train`, `mdk.score`, `mdk.analyze`, `mdk.generate_corpus`, `mdk.fleet_simulation`.
+| Directory | Contents |
+| --------- | -------- |
+| [`tasks/`](../tasks) | Pipeline tasks — standalone Python scripts (ingest, features, KPI, train, score, trends, optimize, report) |
+| [`scripts/`](../scripts) | Orchestrators, physics engine, data generation |
+| [`workflows/`](../workflows) | Workflow DAG declarations ([Validance SDK](https://github.com/validance-io/sdk-python)) |
+| [`docs/`](../docs) | [Technical report](technical-report.md), [feature catalog](feature-catalog.md), [user guide](user-guide.md) |
+| [`example_output_report/`](../example_output_report) | Sample pipeline output ([`sample-report.html`](../example_output_report/sample-report.html)) |
+
+### Verification & Validation
+
+| Document | Contents |
+| -------- | -------- |
+| [`docs/requirements.md`](requirements.md) | 36 functional and non-functional requirements traced to implementation |
+| [`tests/validation-report.html`](../tests/validation-report.html) | Automated V&V report: every requirement mapped to a test, with pass/fail status across the full 1.5 M-row corpus |
+
+### Workflows
+
+| Workflow | Tasks | Description |
+| -------- | ----: | ----------- |
+| [`mdk.pre_processing`](../workflows/fleet_intelligence.py) | 3 | Ingest → features → KPI (shared prefix for training and inference) |
+| [`mdk.train`](../workflows/fleet_intelligence.py) | 1 | XGBoost classifier + quantile regressors |
+| [`mdk.score`](../workflows/fleet_intelligence.py) | 1 | Score fleet with pre-trained model |
+| [`mdk.analyze`](../workflows/fleet_intelligence.py) | 3 | Trends → optimize → report |
+| [`mdk.generate_corpus`](../workflows/fleet_intelligence.py) | 1 | Synthetic training data generation (all scenarios) |
+| [`mdk.generate_batch`](../workflows/fleet_intelligence.py) | 1 | Stateful simulation batch generation |
+| [`mdk.fleet_simulation`](../workflows/fleet_simulation.py) | 1 | Growing-window simulation wrapper (UI-triggerable) |

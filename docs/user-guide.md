@@ -300,7 +300,7 @@ This mode still works for standalone testing without Validance.
 
 ## 4. Reading the Report
 
-Open `report.html` in a browser. The dashboard has these sections, top to bottom.
+Open [`example_output_report/sample-report.html`](../example_output_report/sample-report.html) in a browser for a reference example. The dashboard has these sections, top to bottom.
 
 ### 4.1 Metrics Cards
 

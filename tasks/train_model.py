@@ -455,7 +455,6 @@ def main():
     # ── Save classifier artifact ─────────────────────────────────────────
     # Threshold 0.3: biased toward recall — in mining, a missed failure (FN)
     # costs far more than an unnecessary inspection (FP).
-    # Full analysis: docs/evaluation-analysis.md
     CLASSIFIER_THRESHOLD = 0.3
     model_artifact = {
         "model": model,

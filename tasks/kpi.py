@@ -2,7 +2,7 @@
 """
 Task 3: Compute True Efficiency KPI
 ====================================
-Implements the TE formula from docs/true-efficiency-kpi.md.
+Implements the True Efficiency (TE) formula.
 
     TE = (P_asic + P_cooling_norm) / (H × η_v)
 
@@ -22,7 +22,7 @@ import json
 import pandas as pd
 import numpy as np
 
-# Constants (see docs/true-efficiency-kpi.md)
+# Constants (see technical-report.md §3 for derivation)
 T_REF = 25.0        # Reference ambient temperature (°C)
 VF_ALPHA = 0.6       # V/f scaling exponent for CMOS
 THERMAL_FLOOR = 1.0  # Min (T_chip - T_ambient) to avoid division by zero

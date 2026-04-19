@@ -200,7 +200,6 @@ def parse_args():
                         help="Path to classifier model artifact (default: anomaly_model.joblib)")
     # Override the classification threshold baked into the model artifact
     # (default 0.3). Lower → higher recall, more inspections.
-    # See docs/evaluation-analysis.md for rationale and tuning guide.
     parser.add_argument("--threshold", type=float, default=None,
                         help="Override anomaly probability threshold (default: use model artifact value)")
     return parser.parse_args()

@@ -287,7 +287,7 @@ def main():
     parser.add_argument("--output", default="evaluation_report.json", help="Output path")
     parser.add_argument("--eval-point", default="midpoint",
                         help="Where to evaluate: 'midpoint' (default) or 'last24h'")
-    # Override classification threshold. See docs/evaluation-analysis.md
+    # Override classification threshold.
     parser.add_argument("--threshold", type=float, default=None,
                         help="Override anomaly probability threshold (default: use model artifact value)")
     args = parser.parse_args()
