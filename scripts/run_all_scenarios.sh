@@ -7,7 +7,7 @@
 set -euo pipefail
 
 CYCLES="${1:-2}"
-API_URL="http://localhost:8001"
+API_URL="https://api.validance.io"
 COST_MODEL="data/cost_model.json"
 BASE_DIR="data/validance_run/scenarios"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

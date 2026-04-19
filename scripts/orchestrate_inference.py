@@ -21,7 +21,7 @@ Optional post-inference steps (Pattern A push):
 
 Usage:
     python scripts/orchestrate_inference.py \\
-        --api-url http://localhost:8001 \\
+        --api-url https://api.validance.io \\
         --telemetry-csv /work/fleet_telemetry.csv \\
         --metadata-json /work/fleet_metadata.json \\
         --training-hash 636e10ec2ad88f42
@@ -111,7 +111,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 
 def main():
     parser = argparse.ArgumentParser(description="Inference orchestrator (Pattern 1 chain)")
-    parser.add_argument("--api-url", default="http://localhost:8001",
+    parser.add_argument("--api-url", default="https://api.validance.io",
                         help="Validance API URL")
     parser.add_argument("--telemetry-csv", required=True,
                         help="Path/URI to telemetry CSV")

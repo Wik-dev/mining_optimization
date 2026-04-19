@@ -30,7 +30,7 @@ Usage (CLI, Pattern 1):
     python scripts/orchestrate_simulation.py \\
         --scenario data/scenarios/asic_aging.json \\
         --training-hash 636e10ec2ad88f42 \\
-        --api-url http://localhost:8001
+        --api-url https://api.validance.io
 
     # With custom interval (7 days per cycle instead of default 1):
     python scripts/orchestrate_simulation.py \\
@@ -540,8 +540,8 @@ def main():
                         default=int(os.environ.get("CTX_INTERVAL_DAYS", "1")),
                         help="Simulated days per inference cycle (default: 1)")
     parser.add_argument("--api-url", type=str,
-                        default=os.environ.get("CTX_API_URL", "http://localhost:8001"),
-                        help="Validance API URL (default: http://localhost:8001)")
+                        default=os.environ.get("CTX_API_URL", "https://api.validance.io"),
+                        help="Validance API URL (default: https://api.validance.io)")
     parser.add_argument("--gateway-url", type=str,
                         default=os.environ.get("CTX_GATEWAY_URL", ""),
                         help="OpenClaw gateway URL for AI agent push "

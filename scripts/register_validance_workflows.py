@@ -11,7 +11,7 @@ Registers 7 composable workflows:
   - mdk.fleet_simulation  (1 task: Pattern 5a growing-window simulation wrapper)
 
 Usage:
-    python scripts/register_validance_workflows.py [--api-url http://localhost:8001]
+    python scripts/register_validance_workflows.py [--api-url https://api.validance.io]
 """
 
 import argparse
@@ -70,8 +70,8 @@ def register(api_url, wf, description):
 
 def main():
     parser = argparse.ArgumentParser(description="Register MDK workflows with Validance")
-    parser.add_argument("--api-url", default="http://localhost:8001",
-                        help="Validance API base URL (default: http://localhost:8001)")
+    parser.add_argument("--api-url", default="https://api.validance.io",
+                        help="Validance API base URL (default: https://api.validance.io)")
     args = parser.parse_args()
 
     print(f"Registering workflows against {args.api_url}...")

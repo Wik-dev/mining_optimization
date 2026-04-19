@@ -193,7 +193,7 @@ def main():
                         help="Session hash for pipeline discovery")
     parser.add_argument("--workspace", required=True,
                         help="OpenClaw workspace path (e.g. ~/.openclaw/workspace)")
-    parser.add_argument("--api-url", default="http://localhost:8001",
+    parser.add_argument("--api-url", default="https://api.validance.io",
                         help="Validance API URL")
     parser.add_argument("--score-hash",
                         help="Override: workflow hash for mdk.score (skips discovery)")

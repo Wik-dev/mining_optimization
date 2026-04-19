@@ -10,10 +10,10 @@ Each workflow passes outputs to the next via ``continue_from``. All runs share
 a single ``session_hash`` for audit traceability.
 
 Usage:
-    python scripts/orchestrate_training.py --api-url http://localhost:8001
+    python scripts/orchestrate_training.py --api-url https://api.validance.io
 
     # Skip corpus generation (use existing CSV):
-    python scripts/orchestrate_training.py --api-url http://localhost:8001 \\
+    python scripts/orchestrate_training.py --api-url https://api.validance.io \\
         --telemetry-csv /work/training_telemetry.csv \\
         --metadata-json /work/training_metadata.json
 
@@ -103,7 +103,7 @@ def get_file_url(session: requests.Session, api_url: str,
 
 def main():
     parser = argparse.ArgumentParser(description="Training orchestrator (Pattern 1 chain)")
-    parser.add_argument("--api-url", default="http://localhost:8001",
+    parser.add_argument("--api-url", default="https://api.validance.io",
                         help="Validance API URL")
     parser.add_argument("--telemetry-csv", default=None,
                         help="Skip corpus generation; use this telemetry CSV")

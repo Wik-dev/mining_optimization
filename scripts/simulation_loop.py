@@ -23,7 +23,7 @@ Error handling:
 Usage:
     python scripts/simulation_loop.py \\
         --scenario data/scenarios/baseline.json \\
-        --cycles 12 --api-url http://localhost:8000 --offline
+        --cycles 12 --api-url https://api.validance.io --offline
 
     # Offline mode: skip API calls, just run simulation + write metrics
     python scripts/simulation_loop.py \\
@@ -461,7 +461,7 @@ def main():
                         help="Number of inference cycles after training (default: 12)")
     parser.add_argument("--api-url", type=str, default=None,
                         help="Workflow engine API URL "
-                             "(default: WORKFLOW_API_URL env or http://localhost:8000)")
+                             "(default: WORKFLOW_API_URL env or https://api.validance.io)")
     parser.add_argument("--offline", action="store_true",
                         help="Offline mode: generate batches without API calls")
     parser.add_argument("--speed-factor", type=float, default=None,
@@ -483,7 +483,7 @@ def main():
     api_url = (args.api_url
                or os.environ.get("CTX_API_URL")
                or os.environ.get("WORKFLOW_API_URL")
-               or "http://localhost:8000")
+               or "https://api.validance.io")
 
     # Create simulation engine — use absolute paths so file:// URIs resolve
     output_dir = os.path.abspath(args.output_dir)
