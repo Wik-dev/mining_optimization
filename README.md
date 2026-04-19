@@ -362,7 +362,7 @@ This posts to `POST /hooks/agent` with the cycle notification message containing
 | [`docs/technical-report.md`](docs/technical-report.md) | Technical report (assignment deliverable) |
 | [`docs/assets/architecture.svg`](docs/assets/architecture.svg) | End-to-end architecture diagram |
 | [`docs/architecture-diagram.md`](docs/architecture-diagram.md) | Architecture diagram (ASCII, detailed) |
-| [`docs/validation-report.html`](docs/validation-report.html) | Validation report — 36 SR checks against requirements |
+| [`tests/validation-report.html`](tests/validation-report.html) | Validation report — 36 SR checks against requirements |
 
 ### Reference
 

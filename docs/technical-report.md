@@ -139,7 +139,7 @@ An XGBoost classifier (`n_estimators=200`, `max_depth=6`, `scale_pos_weight` for
 
 Each sub-classifier specializes cleanly: the dominant feature aligns with the physical mechanism (fan RPM for bearing wear, chip count for solder fatigue, voltage ripple for capacitor aging). The overall anomaly rate is 41 % — high because multiple degradation types overlap in the multi-scenario corpus, and each device can exhibit several failure modes simultaneously.
 
-Full-fleet validation (see `docs/validation-report.html`) scores all 1.5 M rows against ground-truth labels from the physics engine:
+Full-fleet validation (see `tests/validation-report.html`) scores all 1.5 M rows against ground-truth labels from the physics engine:
 
 | Granularity  | Precision | Recall | F1    | TP      | TN      | FP     | FN    |
 | ------------ | --------- | ------ | ----- | ------- | ------- | ------ | ----- |
