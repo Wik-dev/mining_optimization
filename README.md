@@ -216,6 +216,7 @@ This pipeline is a **client** of the Validance workflow engine. It does not depe
 | **Workflow Engine** | [`validance-io/sdk-python`](https://github.com/validance-io/sdk-python) | Executes tasks in containers, manages artifacts, content-addressed audit chain |
 | **AI Agent Plugin** | [`safeclaw`](https://github.com/Wik-dev/safeclaw) | Bridges the LLM agent to the governance API (approval gate, learned policies) |
 | **AI Assistant** | [`openclaw`](https://github.com/openclaw/openclaw) | Personal AI assistant platform (hosts the reasoning agent) |
+| **Fleet Dashboard** | [`fleet-health-monitor`](https://github.com/Wik-dev/fleet-health-monitor) | React UI — simulation control, risk heatmaps, tier evolution ([live](https://mdk.validance.io/)) |
 | **This repo** | [`mining_optimization`](https://github.com/Wik-dev/mining_optimization) | Pipeline tasks, physics engine, orchestrators, knowledge corpus |
 
 ---
