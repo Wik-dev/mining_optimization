@@ -4,25 +4,11 @@
 
 Wiktor Lisowski | April 2026
 
-Last edited: 2026-04-18
-
-### Change Log
-
-| Date | Change |
-|------|--------|
-| 2026-04-18 | Added §1.5 Knowledge Corpus & RAG Integration — organizational knowledge pipeline (knowledge_query, rag.ingest, knowledge/ directory) |
-| 2026-04-06 | Step 2 features: 7-day rolling windows (5), `voltage_ripple_std_24h`, `chip_dropout_ratio`, `te_score_slope_24h`, `te_score_slope_7d` — updated §1.4, §2.7, §2.9, §2.10, §3.8, §3.9 feature counts (43→50 classifier, 6→8 temporal, 49→58 regressor) |
-| 2026-04-06 | Added 6 hardware health sensor features (`fan_rpm`, `voltage_ripple_mv`, `reboot_count`, `chip_count_active`, `hashboard_count_active`, `dust_index`) — updated §1.4, §2.10, §3.8, §3.9 feature counts (37→43 classifier, 43→49 regressor) |
-| 2026-04-05 | Added §1.4 feature computation timeline, expanded §2.10 (score.py) with feature justifications, known gaps, scoring window rationale |
-| 2026-04-05 | Initial version |
-
 ---
 
 ## 1. Architecture
 
 ### 1.1 Pipeline Map
-
-The pipeline has two paths that share a common prefix:
 
 ```
                           ┌─────────────────────────┐
@@ -59,25 +45,26 @@ The pipeline has two paths that share a common prefix:
                                      → report.html
 ```
 
-**Why two paths**: Training produces model artifacts from labeled data. Inference uses those artifacts to score new telemetry. Pre-processing (ingest → features → KPI) is identical in both paths — the `continue_from` pattern lets inference reuse pre-processing outputs without re-running them.
+Training produces model artifacts from labeled data. Inference uses those artifacts to score new telemetry. Pre-processing (ingest → features → KPI) is identical in both paths — the `continue_from` pattern reuses pre-processing outputs without re-running them.
 
-**Why orchestration is separate from task logic**: Each task is a standalone Python script that reads files from `/work/` and writes files to `/work/`. Tasks know nothing about Validance, workflows, or each other. The orchestration scripts (`orchestrate_training.py`, `orchestrate_inference.py`) chain tasks via Validance's REST API using `continue_from` hashes. This means tasks can be run manually for debugging, and the orchestration layer can be replaced without touching task code.
+Each task is a standalone Python script that reads from `/work/` and writes to `/work/`. Tasks know nothing about workflows or each other. Orchestration scripts chain tasks via the Validance REST API.
 
 ### 1.2 Script Inventory
 
-**Orchestration** (invoke these):
+**Orchestration**:
 
-| Script | What it chains | Timing |
-|--------|----------------|--------|
-| `scripts/orchestrate_training.py` | generate_corpus → pre_processing → train | ~10 min |
-| `scripts/orchestrate_inference.py` | pre_processing → score → analyze | ~7 min |
+| Script | What it chains |
+|--------|----------------|
+| `scripts/orchestrate_training.py` | generate_corpus → pre_processing → train |
+| `scripts/orchestrate_inference.py` | pre_processing → score → analyze |
+| `scripts/orchestrate_simulation.py` | generate_batch → [pre_processing → score → analyze] x N cycles |
 
 **Data generation**:
 
 | Script | Role |
 |--------|------|
 | `scripts/generate_training_corpus.py` | Runs physics simulation, writes CSV + metadata |
-| `scripts/physics_engine.py` | Library — device models, anomaly injection, telemetry emission |
+| `scripts/physics_engine.py` | Device models, anomaly injection, telemetry emission |
 
 **Pipeline tasks** (run inside containers):
 
@@ -92,19 +79,25 @@ The pipeline has two paths that share a common prefix:
 | 7 | `tasks/optimize.py` | risk scores + trends + metadata | `fleet_actions.json` |
 | 8 | `tasks/report.py` | all of the above | `report.html` |
 
+**Fleet control tasks** (AI agent tools, `fleet-control` image):
+
+| Script | Purpose |
+|--------|---------|
+| `tasks/fleet_status.py` | Query fleet health (summary, device detail, tier breakdown, risk ranking) |
+| `tasks/control_action.py` | Fleet actions (underclock, schedule maintenance, emergency shutdown) |
+| `tasks/pipeline_status.py` | Query Validance API for latest pipeline run refs |
+
 **Workflow definitions**:
 
 | Script | Defines |
 |--------|---------|
-| `workflows/fleet_intelligence.py` | 5 workflow factories (pre_processing, train, score, analyze, generate_corpus) |
+| `workflows/fleet_intelligence.py` | 7 workflow factories (pre_processing, train, score, analyze, generate_corpus, generate_batch, fleet_simulation) |
 
 ### 1.3 Cross-Script Constants
 
-Values shared across multiple scripts. Change one, check the others.
-
 | Constant | Value | Used by |
 |----------|-------|---------|
-| Sample interval | 5 min | All (implicit in window sizes) |
+| Sample interval | 5 min | All |
 | `SCORING_WINDOW_HOURS` | 24 | score.py |
 | `CLASSIFIER_THRESHOLD` | 0.3 | train_model.py, score.py |
 | TE thresholds | 0.8 (DEGRADED), 0.6 (CRITICAL) | score.py, trend_analysis.py, optimize.py |
@@ -119,91 +112,96 @@ Values shared across multiple scripts. Change one, check the others.
 | `TREND_ESCALATION_SLOPE` | -0.005/h | optimize.py |
 | `TREND_CRITICAL_SLOPE` | -0.02/h | optimize.py |
 
+### 1.4 Features
+
+75 engineered features across rolling statistics, rates of change, fleet-relative z-scores, interaction terms, hardware diagnostics, and True Efficiency decomposition. Features incorporate up to 7 days of historical data (2016 samples at 5-min intervals), capturing gradual degradation patterns — fan bearing wear, PSU capacitor aging, thermal paste degradation, and dust fouling — that operate on multi-day timescales and would be invisible in shorter windows.
+
+The classifier uses 50 features (stages 1+2). The regressor adds 8 autoregressive temporal features (lags, slopes, volatility) for a total of 58.
+
+See [`feature-catalog.md`](feature-catalog.md) for the complete feature list with computation methods.
+
+### 1.5 Knowledge Corpus & RAG Integration
+
+The AI reasoning agent queries organizational knowledge via `knowledge_query` (a catalog task running in the `rag-tasks` Docker image).
+
+**Knowledge corpus** (`knowledge/` directory — 8 markdown files):
+
+| File | Content |
+|------|---------|
+| `company-profile.md` | Organization overview, location, capacity |
+| `team-roster.md` | Personnel, roles, shifts, availability |
+| `hardware-inventory.md` | ASIC models, batches, warranty, rack locations |
+| `maintenance-sops.md` | Standard operating procedures |
+| `facility-specs.md` | Power, cooling, network infrastructure |
+| `financial-overview.md` | Electricity rates, budget, BTC breakeven |
+| `vendor-contacts.md` | Suppliers, SLAs, spare parts inventory |
+| `safety-procedures.md` | Emergency protocols, escalation matrix |
+
+**Indexing pipeline** (`rag.ingest` workflow — 5 tasks):
+
+```
+knowledge_corpus.md → load_documents → chunk_documents → embed_chunks → build_index → build_receipt
+```
+
+Output: `index.json` (~44 chunks with embeddings), referenced as `@<ingest_hash>.build_index:result`.
+
+**Query script** (`validance-workflow/modules/rag/tasks/knowledge_query.py`): Reads query from `VALIDANCE_PARAMS`, loads `index.json`, embeds via OpenAI `text-embedding-3-small`, cosine similarity top-K=5, generates answer via `gpt-4.1-mini`.
+
 ---
 
 ## 2. Per-File Reference
 
-<a id="physics-engine"></a>
 ### 2.1 `scripts/physics_engine.py`
 
-**Purpose**: Physics simulation library — device models, anomaly injection, and telemetry emission for synthetic data generation.
+**Purpose**: Physics simulation library — device models, anomaly injection, and telemetry emission.
 
 **Inputs**: Scenario JSON (via `load_scenario(path)`)
-**Outputs**: In-memory `DeviceState` objects and telemetry dicts (consumed by generate_training_corpus.py)
-
-**Key functions**:
+**Outputs**: In-memory `DeviceState` objects and telemetry dicts
 
 | Function | What it does |
 |----------|--------------|
 | `load_scenario(path)` | Parses scenario JSON, resolves site/economic parameters |
-| `simulate_tick(device, ...)` | Single physics timestep: applies load, anomalies, state transitions. Contains the CMOS power model (`P = k * V^2 * f + P_static(T)`), thermal model (exponential approach with inertia tau=0.4h), and cooling controller |
+| `simulate_tick(device, ...)` | Single timestep: CMOS power model (`P = k * V^2 * f + P_static(T)`), thermal model, cooling controller |
 | `emit_telemetry_row(device, ...)` | Formats 35-column telemetry dict from device state |
 
-**Non-obvious decisions**:
-- 10 hardware models with specs from Bitmain/MicroBT/Canaan datasheets. Stock clock/voltage/hashrate/power are real values.
-- 10 anomaly types implemented via physics: Arrhenius aging (thermal), solder fatigue (thermal cycling), dust fouling (% blockage/day), capacitor ESR increase, coolant viscosity.
-- Operating modes (normal/overclock/underclock/idle) are V/f coupled — changing clock implicitly changes voltage, matching ASIC firmware behavior.
-- Noise: 0.5% Gaussian on hashrate, 1 mV on voltage ripple, 20 RPM on fan speed. Power has no additive sensor noise (deterministic CMOS model). See DR-CAL-08.
+10 hardware models (specs from Bitmain/MicroBT/Canaan datasheets), 10 anomaly types (Arrhenius aging, solder fatigue, dust fouling, capacitor ESR, coolant viscosity, etc.).
 
-<a id="generate-corpus"></a>
 ### 2.2 `scripts/generate_training_corpus.py`
 
-**Purpose**: Runs physics simulation over configurable scenarios, writes labeled training data.
+**Purpose**: Runs physics simulation over scenarios, writes labeled training data.
 
 **Inputs**: `data/scenarios/*.json`
 **Outputs**: `training_telemetry.csv`, `training_telemetry.parquet`, `training_metadata.json`, `training_labels.csv`
 
-**Key functions**:
-
 | Function | What it does |
 |----------|--------------|
-| `generate_scenario_data(scenario_path, seed, prefix)` | Runs full simulation for one scenario, returns (rows, metadata) |
-| `write_outputs(rows, metadata, output_dir)` | Writes CSV + Parquet + metadata JSON, computes SHA-256 hash |
+| `generate_scenario_data(scenario_path, seed, prefix)` | Full simulation for one scenario |
+| `write_outputs(rows, metadata, output_dir)` | Writes CSV + Parquet + metadata JSON with SHA-256 hash |
 
-**Non-obvious decisions**:
-- Seed hierarchy: CLI `--seed` > scenario JSON seed > default (42). Multi-scenario runs prefix device_id with scenario name to avoid collisions.
-- `--all` flag generates from all 5 scenarios in `data/scenarios/`. Single scenario via `--scenario path`.
+`--all` flag generates from all 5 scenarios. Single scenario via `--scenario path`.
 
-<a id="orchestrate-training"></a>
 ### 2.3 `scripts/orchestrate_training.py`
 
 **Purpose**: Chains generate_corpus → pre_processing → train via Validance REST API.
 
-**Inputs**: `--api-url`, optionally `--telemetry-csv` + `--metadata-json` (to skip corpus generation)
+**Inputs**: `--api-url`, optionally `--telemetry-csv` + `--metadata-json`
 **Outputs**: Console output with session hash and model artifact path
-
-**Key functions**:
 
 | Function | What it does |
 |----------|--------------|
-| `trigger_workflow(session, api_url, name, params, hash, continue_from)` | POSTs to `/api/workflows/{name}/trigger`, returns workflow_hash |
-| `poll_completion(session, api_url, name, hash)` | Polls `/api/workflows/{name}/status` until done or timeout |
+| `trigger_workflow(session, api_url, name, params, hash, continue_from)` | POSTs to `/api/workflows/{name}/trigger` |
+| `poll_completion(session, api_url, name, hash)` | Polls `/api/workflows/{name}/status` until done |
 
-**Non-obvious decisions**:
-- Each step passes `continue_from=prev_hash` so Validance chains outputs from the previous workflow into the next.
-- Session hash is SHA-256 of `"training_{timestamp}"` — links all workflows in a single audit trail.
-- `POLL_TIMEOUT = 3600s` (1 hour) because full corpus training can take ~20 min.
-
-<a id="orchestrate-inference"></a>
 ### 2.4 `scripts/orchestrate_inference.py`
 
-**Purpose**: Chains pre_processing → score → analyze via Validance REST API.
+**Purpose**: Chains pre_processing → score → analyze via Validance REST API. Optionally notifies the AI agent via gateway webhook after completion.
 
-**Inputs**: `--api-url`, `--telemetry-csv`, `--metadata-json`, `--model-path` (all required), optionally `--regression-model-path`, `--model-metrics-path`
+**Inputs**: `--api-url`, `--training-hash` (required), optionally `--gateway-url` + `--gateway-token`
 **Outputs**: Console output; files available in `/work/`
 
-**Key functions**: Same as orchestrate_training (`trigger_workflow`, `poll_completion`).
-
-**Non-obvious decisions**:
-- If no regression model path provided, scoring runs in classifier-only mode (no multi-horizon predictions).
-- `POLL_TIMEOUT = 1800s` (30 min) — inference is faster than training.
-
-<a id="fleet-intelligence"></a>
 ### 2.5 `workflows/fleet_intelligence.py`
 
-**Purpose**: Defines 5 composable Validance workflows as factory functions.
-
-**Key functions**:
+**Purpose**: Defines 7 composable Validance workflows as factory functions.
 
 | Function | Tasks | Timeout |
 |----------|-------|---------|
@@ -212,122 +210,11 @@ Values shared across multiple scripts. Change one, check the others.
 | `create_score_workflow()` | score_fleet (1 task) | 300s |
 | `create_analyze_workflow()` | trends → optimize → report (3 tasks) | 300/300/600s |
 | `create_corpus_workflow()` | generate_training_data (1 task) | 1200s |
+| `create_batch_workflow()` | generate_batch (1 task) | 600s |
+| `create_simulation_workflow()` | simulation_loop (1 task, Pattern 5a) | 7200s |
 
-**Non-obvious decisions**:
-- All tasks use `autoregistry.azurecr.io/mdk-fleet-intelligence:latest` image.
-- Inter-task references use `@task_name:output_key` syntax. Workflow parameters use `${param_name}`.
-- `WORKFLOWS` dict maps shortnames to factories — used by `register_validance_workflows.py` for discovery.
-- Tasks run at `/app/tasks/` and `/app/scripts/` inside the container.
+All tasks use `autoregistry.azurecr.io/mdk-fleet-intelligence:latest`. Inter-task references use `@task_name:output_key` syntax.
 
-### 1.4 Feature Computation Timeline
-
-Where each feature group is born and consumed across pipeline stages:
-
-**Stage 1 — `features.py`** (per-device rolling windows, derivatives, fleet context)
-
-| Group | Features | Window / method | In model? |
-|-------|----------|-----------------|-----------|
-| Rolling means | `{col}_mean_1h`, `_mean_12h`, `_mean_24h` | 12 / 144 / 288 samples | 1h, 24h yes; 12h **no** |
-| Rolling std | `{col}_std_1h`, `_std_24h` | 12 / 288 samples | yes |
-| Rolling deviation | `{col}_dev_24h` | z-score vs 24h mean | yes |
-| Short hashrate | `hashrate_th_mean_30m` | 6 samples | **no** (future) |
-| Rate of change (raw) | `d_{col}` | `.diff()` | **no** |
-| Rate of change (smooth) | `d_{col}_smooth` | 12-sample rolling mean of diffs | yes |
-| Fleet-relative | `{col}_fleet_z` | per-model z-score per timestamp | yes |
-| Interaction | `power_per_ghz`, `thermal_headroom_c`, `cooling_effectiveness`, `hashrate_ratio`, `voltage_deviation` | point-in-time ratios | yes |
-| Site conditions | `ambient_temp_c`, `energy_price_kwh` | passthrough | yes (but `energy_price` is **questionable** — see [§2.10 Gaps](#score)) |
-| Hardware health | `fan_rpm`, `voltage_ripple_mv`, `reboot_count`, `chip_count_active`, `hashboard_count_active`, `dust_index` | raw telemetry passthrough | yes |
-| 7-day rolling windows | `{col}_mean_7d`, `{col}_dev_7d` (temp, power, hashrate, efficiency) + `{col}_std_7d` (all 6 cols) | 2016 samples (7d) | mean_7d + dev_7d for 4 cols = yes (5 features); std_7d = intermediate |
-| Hardware diagnostics | `voltage_ripple_std_24h`, `chip_dropout_ratio` | 288-sample rolling std; active/nominal ratio | yes |
-
-`{col}` = `temperature_c`, `power_w`, `hashrate_th`, `voltage_v`, `cooling_power_w`, `efficiency_jth`
-
-**Stage 2 — `kpi.py`** (True Efficiency decomposition)
-
-| Feature | Formula | Notes |
-|---------|---------|-------|
-| `te_base` | P / H | Naive J/TH |
-| `eta_v` | (V_opt / V_actual)² | Voltage efficiency, clipped [0, 2] |
-| `voltage_penalty` | 1 / eta_v | Multiplier for voltage waste |
-| `cooling_ratio` | (P + P_cool_norm) / P | Cooling overhead factor |
-| `true_efficiency` | (P + P_cool_norm) / (H * eta_v) | Corrected J/TH |
-| `te_score` | TE_nominal / true_efficiency | Health score: 1.0 = nominal, <1.0 = degrading |
-
-**Stage 3 — `train_model.py` / `score.py`** (regressor-only temporal features)
-
-| Feature | Method | Window |
-|---------|--------|--------|
-| `te_score_lag_1h` | `shift(12)` | 1h lookback |
-| `te_score_lag_6h` | `shift(72)` | 6h lookback |
-| `te_score_lag_24h` | `shift(288)` | 24h lookback |
-| `te_score_slope_1h` | `polyfit(12)` | 1h linear trend |
-| `te_score_slope_6h` | `polyfit(72)` | 6h linear trend |
-| `te_score_volatility_24h` | `std(288)` | 24h rolling std |
-| `te_score_slope_24h` | `polyfit(288)` | 24h linear trend |
-| `te_score_slope_7d` | `polyfit(2016)` | 7d linear trend |
-
-**Model consumption**: Classifier uses stages 1+2 (50 features). Regressor uses stages 1+2+3 (50 + 8 = 58 features).
-
-#### History dependency at inference
-
-How far back each model path looks, shown as a timeline from oldest data to present:
-
-```
-    oldest data                                                          now
-    |                                                                     |
-    |·····················  N days of history  ····························|
-    |                                                                     |
-    |  features.py: rolling windows need >=7d (2016 samples) of history   |
-    |  kpi.py:      TE formula applied to every row                       |
-    |                                                                     |
-    |                                          |·· last 24h ··|          |
-    |                                          |  Classifier   |          |
-    |                                          |  scores each  |          |
-    |                                          |  row in this  |          |
-    |                                          |  window       |          |
-    |                                                                     |
-    |  Regressor: lags/slopes computed from full history ──────────> predict
-    |             (needs 24h+ before scoring window)        last row only  |
-```
-
-| Model | History needed | Scores | Output |
-|-------|---------------|--------|--------|
-| Classifier | >=7d before window (for 7d rolling features to warm up) | Every row in last 24h | `mean_risk`, `max_risk`, `pct_flagged` per device |
-| Regressor | Full history (lags up to 24h back from last row) | Last row only | TE_score at 1h/6h/24h/7d with p10/p50/p90 |
-
-### 1.5 Knowledge Corpus & RAG Integration
-
-The AI reasoning agent queries organizational knowledge via `knowledge_query` (a catalog task running in the `rag-tasks` Docker image). This provides company-specific context — SOPs, team availability, hardware specs, financial constraints — that the agent weaves into its economic reasoning alongside ML perception and market data.
-
-**Knowledge corpus** (`knowledge/` directory — 8 markdown files):
-
-| File | Content | Key queryable facts |
-|------|---------|-------------------|
-| `company-profile.md` | Organization overview, mission, location | 50MW facility, Kiruna Sweden, 5000 ASICs |
-| `team-roster.md` | Personnel, roles, shifts, availability | Jean on leave April 15–May 5, night shift contacts |
-| `hardware-inventory.md` | ASIC models, batches, warranty, rack locations | S19j Pro batch B2 warranty expires June 2026 |
-| `maintenance-sops.md` | SOPs: thermal response, fan swap, PSU replacement | SOP-004: underclock-first, then schedule maintenance |
-| `facility-specs.md` | Power capacity, cooling system, network | 50MW transformer, evaporative cooling, 35°C ambient limit |
-| `financial-overview.md` | Electricity rates, budget, BTC breakeven | $0.045/kWh base, $28k BTC breakeven, $50k/month equipment budget |
-| `vendor-contacts.md` | Suppliers, SLAs, spare parts inventory | Bitmain 48h response SLA, 50 replacement fans in stock |
-| `safety-procedures.md` | Emergency protocols, escalation matrix | Thermal >80°C → immediate shutdown, call site manager |
-
-**Indexing pipeline** (`rag.ingest` workflow — 5 tasks in `rag-tasks` image):
-
-```
-knowledge_corpus.md → load_documents → chunk_documents → embed_chunks → build_index → build_receipt
-                      (parse MD)       (split ~500 tok)   (OpenAI API)    (JSON + vectors)  (hash chain)
-```
-
-The corpus files are concatenated into `knowledge_corpus.md`, uploaded to Azure blob storage, and ingested via `rag.ingest`. Output: `index.json` (~44 chunks with embeddings), referenced as `@<ingest_hash>.build_index:result`. Run once per corpus update.
-
-**Query script** (`validance-workflow/modules/rag/tasks/knowledge_query.py`):
-
-Self-contained script (no imports from `modules.rag/`). Reads `VALIDANCE_PARAMS` env for query, loads `index.json` from `/work/`, embeds query via OpenAI `text-embedding-3-small`, cosine similarity search (top-K=5), assembles prompt with mining-ops system prompt + retrieved context, calls `gpt-4.1-mini`. Returns JSON: `{status, query, response, sources, model, usage, manifest}`.
-
-**Catalog template**: `knowledge_query` — `approval_tier: auto-approve`, `secret_refs: ["OPENAI_API_KEY"]`, `timeout: 60s`, `rate_limit: 100/session`.
-
-<a id="ingest"></a>
 ### 2.6 `tasks/ingest.py`
 
 **Purpose**: Validates raw telemetry CSV, enforces schema, deduplicates, converts to Parquet.
@@ -335,36 +222,24 @@ Self-contained script (no imports from `modules.rag/`). Reads `VALIDANCE_PARAMS`
 **Inputs**: `fleet_telemetry.csv`, `fleet_metadata.json`
 **Outputs**: `telemetry.parquet`, `_validance_vars.json`
 
-**Key function**: `main()` — single-pass: load CSV, validate schema (23 expected columns), warn on nulls, drop duplicate `(timestamp, device_id)`, parse types, sort by `[device_id, timestamp]`, write Parquet.
+Single-pass: load CSV → validate schema (23 columns) → warn on nulls → drop duplicate `(timestamp, device_id)` → parse types → sort by `[device_id, timestamp]` → write Parquet.
 
-**Non-obvious decisions**:
-- Warns on nulls but does not fail — proceeds with NaN. Quality issues are surfaced, not blocked.
-- Label columns (`label_thermal_deg`, etc.) are cast to int explicitly.
-
-<a id="features"></a>
 ### 2.7 `tasks/features.py`
 
-**Purpose**: Engineers 75 features from raw telemetry: rolling stats, rates of change, fleet-relative z-scores, interaction terms.
+**Purpose**: Engineers 75 features from raw telemetry.
 
 **Inputs**: `telemetry.parquet`, `fleet_metadata.json`
 **Outputs**: `features.parquet`, `_validance_vars.json`
 
-**Key functions**:
-
 | Function | What it does |
 |----------|--------------|
-| `add_rolling_features(group)` | Per-device rolling mean/std at 30m, 1h, 12h, 24h, 7d windows + `voltage_ripple_std_24h` |
-| `add_rate_of_change(group)` | First-order diffs + 1h smoothed diffs for temp, power, hashrate, voltage |
+| `add_rolling_features(group)` | Per-device rolling mean/std at 30m, 1h, 12h, 24h, 7d windows |
+| `add_rate_of_change(group)` | First-order diffs + 1h smoothed diffs |
 | `add_cross_device_features(df)` | Z-scores within same model per timestamp |
-| `add_interaction_features(df)` | power_per_ghz, thermal_headroom_c, cooling_effectiveness, hashrate_ratio, voltage_deviation, chip_dropout_ratio |
+| `add_interaction_features(df)` | power_per_ghz, thermal_headroom_c, cooling_effectiveness, etc. |
 
-**Non-obvious decisions**:
-- Window sizes in samples (not time): 6 (30m), 12 (1h), 144 (12h), 288 (24h), 2016 (7d) at 5-min intervals.
-- 30m hashrate window (`hashrate_th_mean_30m`) approximates MOS's native `hashrate_30m` field. Computed but not yet in the classifier feature set.
-- `thermal_headroom_c = 85.0 - temperature_c` uses 85 C (not the 80 C hard limit) — measures distance to junction temp ceiling, not the PCB trigger point.
-- Cross-device z-scores are computed per-model (same hardware) per-timestamp. A device that's hot relative to its peers shows up even if the absolute temp is fine.
+Window sizes in samples: 6 (30m), 12 (1h), 144 (12h), 288 (24h), 2016 (7d). See [`feature-catalog.md`](feature-catalog.md) for the full list.
 
-<a id="kpi"></a>
 ### 2.8 `tasks/kpi.py`
 
 **Purpose**: Computes True Efficiency with diagnostic decomposition and per-device health scores.
@@ -372,23 +247,14 @@ Self-contained script (no imports from `modules.rag/`). Reads `VALIDANCE_PARAMS`
 **Inputs**: `features.parquet`, `fleet_metadata.json`
 **Outputs**: `kpi_timeseries.parquet`, `_validance_vars.json`
 
-**Key functions**:
-
 | Function | What it does |
 |----------|--------------|
 | `compute_voltage_efficiency(df)` | `eta_v = (V_optimal / V_actual)^2` where `V_optimal = V_stock * (f/f_stock)^0.6` |
 | `compute_cooling_normalized(df)` | `P_cool_norm = P_cool * (T_chip - 25) / max(T_chip - T_ambient, 1)` |
 | `compute_te_nominal(meta)` | TE at stock settings per device: `(P + 0.10*P) / H` |
 
-**Non-obvious decisions**:
-- VF_ALPHA = 0.6: sub-linear V/f exponent for 7-14nm CMOS. Not 1.0 (linear) and not 0.5 (square-root).
-- T_REF = 25 C: industry-standard reference ambient. Cooling cost normalized to this removes geographic bias.
-- THERMAL_FLOOR = 1.0 C: prevents division by zero when `T_chip ≈ T_ambient`.
-- eta_v clipped to [0, 2]: prevents pathological values from corrupting downstream.
-- Cooling estimate for TE_nominal = 10% of ASIC power. Empirical for hydro-cooled 3-5 kW ASICs in northern climates.
-- Idle samples (hashrate <= 0) get NaN for all KPI columns — TE is undefined when not hashing.
+Idle samples (hashrate <= 0) get NaN for all KPI columns.
 
-<a id="train-model"></a>
 ### 2.9 `tasks/train_model.py`
 
 **Purpose**: Trains XGBoost binary classifier (anomaly detection) and 12 quantile regressors (multi-horizon TE_score prediction).
@@ -396,86 +262,30 @@ Self-contained script (no imports from `modules.rag/`). Reads `VALIDANCE_PARAMS`
 **Inputs**: `kpi_timeseries.parquet`, `fleet_metadata.json`
 **Outputs**: `anomaly_model.joblib`, `regression_model_v{N}.joblib`, `model_registry.json`, `model_metrics.json`, `_validance_vars.json`
 
-**Key functions**:
-
 | Function | What it does |
 |----------|--------------|
-| `train_classifier(X, y, name)` | XGBoost with `scale_pos_weight = n_neg/n_pos`, no internal CV |
-| `add_temporal_features(df)` | Adds 8 autoregressive features: lags (1h, 6h, 24h), slopes (1h, 6h, 24h, 7d), volatility (24h) |
+| `train_classifier(X, y, name)` | XGBoost with `scale_pos_weight = n_neg/n_pos` |
+| `add_temporal_features(df)` | 8 autoregressive features: lags (1h, 6h, 24h), slopes (1h, 6h, 24h, 7d), volatility (24h) |
 | `train_all_regressors(X, targets, names)` | 4 horizons x 3 quantiles = 12 XGBRegressor models |
-| `update_registry(path, version, ...)` | Auto-increments version; first version auto-promotes |
 
-**Non-obvious decisions**:
-- Trained on 100% of the corpus with no internal train/test split. Rationale: rare anomaly types get maximum coverage. Evaluation happens at inference time against independently generated data.
-- Classifier: `n_estimators=200, max_depth=6, learning_rate=0.1`. Threshold = 0.3 (biased toward recall).
-- Regression: `objective='reg:quantileerror'` (pinball loss). Each quantile is a separate model to avoid crossing violations.
-- Horizons: 1h (12 samples), 6h (72), 24h (288), 7d (2016). Quantiles: p10, p50, p90.
-- Temporal features for regression: `te_score_lag_1h`, `_lag_6h`, `_lag_24h`, `_slope_1h`, `_slope_6h`, `_volatility_24h`, `_slope_24h`, `_slope_7d`. These are per-device (no cross-device leakage). The 24h and 7d slopes close the temporal feature / prediction horizon mismatch — the 7d regression target now has matching-scale slope inputs.
-- Post-prediction: enforce p10 <= p50 <= p90 to handle rare quantile crossings from separate models.
-- Per-anomaly-type sub-classifiers trained for interpretability (feature importance per type) but not used for scoring.
+Classifier: `n_estimators=200, max_depth=6, learning_rate=0.1, threshold=0.3`.
+Regression: `objective='reg:quantileerror'` (pinball loss). Horizons: 1h, 6h, 24h, 7d. Quantiles: p10, p50, p90.
 
-<a id="score"></a>
 ### 2.10 `tasks/score.py`
 
-**Purpose**: Scores latest 24h window with pre-trained classifier and (optionally) regression model.
+**Purpose**: Scores latest 24h window with pre-trained classifier and optionally regression model.
 
-**Inputs**: `kpi_timeseries.parquet`, `anomaly_model.joblib`, `fleet_metadata.json`, optionally `regression_model_v{N}.joblib` + `model_registry.json`
+**Inputs**: `kpi_timeseries.parquet`, `anomaly_model.joblib`, `fleet_metadata.json`, optionally `regression_model_v{N}.joblib`
 **Outputs**: `fleet_risk_scores.json`, `_validance_vars.json`
-
-**Key functions**:
 
 | Function | What it does |
 |----------|--------------|
-| `predict_horizons(last_row, artifact)` | Predicts TE_score at 4 horizons x 3 quantiles for one device |
+| `predict_horizons(last_row, artifact)` | Predicts TE_score at 4 horizons x 3 quantiles |
 | `compute_predicted_crossings(predictions)` | Finds first horizon where p50 drops below 0.8 or 0.6 |
-| `main()` | Selects 24h window, scores classifier, aggregates per-device, optionally predicts |
+| `main()` | Selects 24h window, scores classifier, aggregates per-device |
 
-**Non-obvious decisions**:
-- Scoring window: last 24h of data. Uses full history (not just window) to compute temporal features — lags need earlier data.
-- Graceful regression fallback: if no regression model found, outputs classifier-only scores (no `predictions` or `predicted_crossings` fields).
-- Crossing confidence: "high" if p90 also crosses threshold, "medium" if only p50 crosses.
-- Devices sorted by `mean_risk` descending in output.
+The scoring window covers the last 24h, but the full history is used to compute features — rolling windows require up to 7 days of prior data for warm-up, and temporal lags look back 24h from the scoring boundary. Devices sorted by `mean_risk` descending.
 
-#### Feature justification
-
-All 50 classifier features and 8 regressor-only temporal features, with domain justification and confidence level:
-
-| Group | Count | Features | Justification | Strength |
-|-------|-------|----------|---------------|----------|
-| TE decomposition | 6 | `te_base`, `voltage_penalty`, `cooling_ratio`, `eta_v`, `true_efficiency`, `te_score` | Directly from TE KPI formula; physics: P ∝ V²f (CMOS), cooling normalization. Documented in `docs/true-efficiency-kpi.md` | Strong |
-| Rolling stats | 16 | `{col}_mean_1h`, `_std_1h`, `_mean_24h`, `_dev_24h` for 6 telemetry cols | Standard time-series summarization. 1h = recent trend, 24h = daily baseline, dev = z-score deviation. Window sizes are round-number conventions, not empirically tuned | Reasonable |
-| Rate of change | 4 | `d_{col}_smooth` for temp, power, hashrate, voltage | First-order derivative captures onset of degradation. Smoothed (1h rolling) to suppress sensor noise | Strong |
-| Interaction | 5 | `power_per_ghz`, `thermal_headroom_c`, `cooling_effectiveness`, `hashrate_ratio`, `voltage_deviation` | Physics-motivated diagnostic ratios. `power_per_ghz` ≈ constant if healthy; `thermal_headroom` = distance to limit | Strong |
-| Fleet-relative | 4 | `{col}_fleet_z` for temp, power, hashrate, efficiency | Relative performance vs peers (same model, same timestamp). Catches individual device drift that absolute values miss | Reasonable |
-| Site conditions | 2 | `ambient_temp_c`, `energy_price_kwh` | `ambient_temp_c`: relevant (affects cooling). `energy_price_kwh`: **no physical relationship to device health** — economic signal leaked into health detector | Weak (`energy_price`) |
-| Hardware health sensors | 6 | `fan_rpm`, `voltage_ripple_mv`, `reboot_count`, `chip_count_active`, `hashboard_count_active`, `dust_index` | Raw telemetry passthrough from physics engine. Strongest early warning signals for fan bearing wear (RPM decline), PSU capacitor aging (ripple increase), solder fatigue (chip dropout), dust fouling (accumulation index). See `deep-research-report-mining.md`, `notes_mining_data.md` | Strong |
-| 7-day rolling windows | 5 | `temperature_c_mean_7d`, `temperature_c_dev_7d`, `power_w_mean_7d`, `hashrate_th_mean_7d`, `efficiency_jth_mean_7d` | Multi-day baseline for gradual degradation invisible in 24h windows. `notes_mining_data.md` line 42: "A 3°C rise over a week at constant ambient is a stronger signal than absolute temperature." Fan bearing wear, PSU capacitor aging, thermal paste degradation, dust fouling all operate on week-scale timelines | Strong |
-| Hardware diagnostics | 2 | `voltage_ripple_std_24h`, `chip_dropout_ratio` | `voltage_ripple_std_24h`: PSU capacitor aging manifests as increasing variance before the mean shifts (`notes_mining_data.md` line 44). `chip_dropout_ratio`: active/nominal chips normalized across models — "chip count dropping" is first predictive signal (`notes_mining_data.md` line 13) | Strong |
-| Temporal (regressor only) | 8 | `te_score_lag_{1h,6h,24h}`, `te_score_slope_{1h,6h,24h,7d}`, `te_score_volatility_24h` | Autoregressive features encoding trajectory. Lags = level at past horizons, slopes = trend direction (1h–7d), volatility = stability. 24h and 7d slopes close the temporal feature / prediction horizon mismatch | Strong |
-
-Total: 50 (classifier) / 58 (regressor = 50 + 8 temporal).
-
-#### Known gaps and limitations
-
-1. **No feature selection / ablation study** — all 50 features included by default. No evidence that dropping any specific feature hurts performance. XGBoost's built-in feature importance provides ranking but not necessity. See DR-CAL-09.
-
-2. **Window sizes are convention, not calibrated** — 1h/12h/24h are round numbers. Comment in `features.py` mentions MOS provides 5s/5m/30m resolutions, but the windows don't map to those. The 12h window is computed but excluded from the model entirely.
-
-3. **`energy_price_kwh` is a feature leak** — no physical relationship to device health. If XGBoost learns spurious correlations with this signal in synthetic data (e.g., anomalies happen to co-occur with certain price patterns), the model will fail on real data where the correlation doesn't hold.
-
-4. **Fleet z-scores are snapshot-only** — computed per timestamp, not over a window. A device slowly drifting away from fleet median over days isn't captured; only instant divergence is visible.
-
-5. **Computed features not in model** — `features.py` computes many rolling windows; not all are in `FEATURE_COLS`. The 12h rolling means (6), raw diffs (4), 30m hashrate (2), and several 7d std/dev columns are computed but excluded. Documented as "future work" but no ablation justifies exclusion either.
-
-6. **Classifier and regressor see different feature sets** — classifier gets 50 point-in-time features, regressor gets 58 (50 + 8 temporal). The temporal features are the regressor's main advantage, but they're computed in both `train_model.py` and `score.py` (same logic, duplicated code).
-
-7. **Scoring window is fixed at 24h** — no adaptive window. A degradation that started 36h ago shows diluted signal vs one that started 6h ago.
-
-#### Why 24h? — scoring window rationale
-
-The 24h window matches the intended batch cadence: score once per day, flag what needs attention. Shorter windows (e.g. 6h) would be more responsive but noisier — a single transient spike could trigger a false flag. Longer windows (e.g. 72h) dilute current degradation signal with historical health data. The regressor compensates for the fixed window by using full history for temporal features (lags, slopes), giving it trajectory awareness that the classifier's point-in-time view lacks.
-
-<a id="trend-analysis"></a>
 ### 2.11 `tasks/trend_analysis.py`
 
 **Purpose**: Per-device trend vectors, CUSUM regime detection, and threshold crossing projections.
@@ -483,24 +293,15 @@ The 24h window matches the intended batch cadence: score once per day, flag what
 **Inputs**: `kpi_timeseries.parquet`, `fleet_risk_scores.json` (optional)
 **Outputs**: `trend_analysis.json`, `_validance_vars.json`
 
-**Key functions**:
-
 | Function | What it does |
 |----------|--------------|
-| `compute_linear_trend(values)` | OLS slope + R^2 via polyfit. Returns slope_per_sample, r_squared, n_samples |
+| `compute_linear_trend(values)` | OLS slope + R^2 via polyfit |
 | `detect_regime_change_cusum(values, h, k)` | Two-sided CUSUM (Page 1954). Reference period = first 25% of history |
 | `project_threshold_crossing(current, slope, r2, threshold)` | Linear extrapolation to 0.8 and 0.6 thresholds |
-| `classify_direction(slope_per_hour)` | Maps slope to falling_fast / declining / stable / recovering / recovering_fast |
+| `classify_direction(slope_per_hour)` | falling_fast / declining / stable / recovering / recovering_fast |
 
-**Non-obvious decisions**:
-- CUSUM h=8.0, k=0.5 (Hawkins defaults for ~1-sigma shift detection). Reference period = first 25% of device history to avoid contaminating baseline with the change itself.
-- Direction thresholds: falling_fast < -0.02/h, declining < -0.005/h, stable within +/-0.005/h. At 5-min sampling, slopes within +/-0.005 are indistinguishable from measurement noise.
-- MIN_SAMPLES = 6 (30 min). Below this, noise dominates.
-- MIN_R2_FOR_PROJECTION = 0.1 (permissive). The confidence value in the output *is* the R^2, so consumers can filter.
-- Temperature trends use EWMA (span=12) for smoothing before slope computation. TE trends use raw linear regression.
-- All functions are pure (no side effects, no file I/O). `analyze_device_trends()` orchestrates them per device.
+CUSUM parameters: h=8.0, k=0.5. Direction thresholds: falling_fast < -0.02/h, declining < -0.005/h, stable within +/-0.005/h.
 
-<a id="optimize"></a>
 ### 2.12 `tasks/optimize.py`
 
 **Purpose**: Deterministic controller — safety overrides, tier classification, and MOS-mapped command generation.
@@ -508,24 +309,15 @@ The 24h window matches the intended batch cadence: score once per day, flag what
 **Inputs**: `fleet_risk_scores.json`, `kpi_timeseries.parquet`, `fleet_metadata.json`, optionally `trend_analysis.json`
 **Outputs**: `fleet_actions.json`, `_validance_vars.json`
 
-**Key functions**:
-
 | Function | What it does |
 |----------|--------------|
-| `apply_safety_overrides(risk, stock)` | Checks 4 safety constraints; returns override commands. Always runs before tier logic. |
-| `classify_tier(risk, trend)` | Maps risk/TE_score to CRITICAL/WARNING/DEGRADED/HEALTHY. Applies trend-aware escalation (never de-escalates). |
-| `apply_fleet_redundancy(actions)` | Defers lowest-risk device if all same-model devices are flagged for inspection |
-| `annotate_mos_methods(actions)` | Maps command types to MOS RPC names (setFrequency, setPowerMode, etc.) |
+| `apply_safety_overrides(risk, stock)` | 4 hard safety constraints, always runs before tier logic |
+| `classify_tier(risk, trend)` | Maps risk/TE_score to CRITICAL/WARNING/DEGRADED/HEALTHY |
+| `apply_fleet_redundancy(actions)` | Defers lowest-risk device if all same-model devices are flagged |
+| `annotate_mos_methods(actions)` | Maps command types to MOS RPC names |
 
-**Non-obvious decisions**:
-- Safety overrides applied BEFORE tier logic — they always win. Order: thermal hard limit (80 C) → thermal emergency low (10 C) → thermal low warning (20 C) → overvoltage (110% stock).
-- No `set_voltage` command exists. Voltage is V/f coupled in ASIC firmware — reducing frequency implicitly restores nominal V/f point. This matches MOS's `setFrequency` as the primary tuning RPC.
-- Trend escalation: slope < -0.005/h AND HEALTHY → WARNING. Slope < -0.02/h → escalate one step toward CRITICAL. CUSUM regime change AND HEALTHY → WARNING. Minimum R^2 = 0.3 to trust trend.
-- Trend de-escalation is explicitly disabled (conservative). A recovering device stays at its tier until static logic catches up.
-- Fleet redundancy: never all devices of same model offline. If conflict, lowest-risk device gets deferred.
-- Overclock suggestion: only for HEALTHY devices with thermal_headroom > 10 C and not already overclocked. Target = stock * 1.05.
+Safety override order: thermal hard limit (80 C) → thermal emergency low (10 C) → thermal low warning (20 C) → overvoltage (110% stock). Trend escalation is one-directional (no de-escalation).
 
-<a id="report"></a>
 ### 2.13 `tasks/report.py`
 
 **Purpose**: Generates self-contained HTML dashboard with embedded base64 PNG charts.
@@ -533,34 +325,51 @@ The 24h window matches the intended batch cadence: score once per day, flag what
 **Inputs**: `kpi_timeseries.parquet`, `fleet_risk_scores.json`, `fleet_actions.json`, `fleet_metadata.json`, optionally `trend_analysis.json`, `model_metrics.json`
 **Outputs**: `report.html`
 
-**Key functions**:
+| Function | Chart type |
+|----------|-----------|
+| `plot_te_timeseries(df)` | Line chart per device (hourly) |
+| `plot_te_decomposition(df)` | Grouped bar (TE_base + voltage + cooling) |
+| `plot_health_scores(df)` | Heatmap (device x date), RdYlGn |
+| `plot_anomaly_timeline(df)` | Stacked area per anomaly type |
+| `plot_risk_ranking(risk_scores)` | Horizontal bar, sorted by mean_risk |
+| `plot_controller_tiers(actions)` | Bar + pie (tier distribution) |
+| `plot_model_metrics(metrics)` | Feature importance (top 15) |
 
-| Function | Chart type | Data source |
-|----------|-----------|-------------|
-| `plot_te_timeseries(df)` | Line chart, per device, hourly | kpi_timeseries.parquet |
-| `plot_te_decomposition(df)` | Grouped bar (TE_base + voltage + cooling) | kpi_timeseries.parquet |
-| `plot_health_scores(df)` | Heatmap (device x date), RdYlGn | kpi_timeseries.parquet |
-| `plot_anomaly_timeline(df)` | Stacked area per anomaly type | kpi_timeseries.parquet (label_* columns) |
-| `plot_risk_ranking(risk_scores)` | Horizontal bar, sorted by mean_risk | fleet_risk_scores.json |
-| `plot_controller_tiers(actions)` | Bar + pie (tier distribution) | fleet_actions.json |
-| `plot_model_metrics(metrics)` | Feature importance (top 15), per-type breakdown | model_metrics.json |
+Charts rendered with matplotlib Agg backend, DPI=120, embedded as base64 PNG. Optional sections included only if their input files exist.
 
-**Non-obvious decisions**:
-- All charts rendered with matplotlib Agg backend (no display), DPI=120, embedded as `data:image/png;base64,...`. No external dependencies in the HTML.
-- Anomaly timeline dynamically discovers `label_*` columns with >= 1 positive sample. Handles varying anomaly mixes across scenarios without code changes.
-- Health heatmap: vmin=0.5, vmax=1.2. Scores above 1.0 (better than nominal) appear as bright green.
-- Tier colors: CRITICAL=#F44336, WARNING=#FF9800, DEGRADED=#FFC107, HEALTHY=#4CAF50.
-- Optional sections (predictions, trends, economics) are included only if their input files exist. The report degrades gracefully.
+### 2.14 `tasks/fleet_status.py`
+
+**Purpose**: Query fleet health data for the AI agent. Supports 4 query types: `summary`, `device_detail`, `tier_breakdown`, `risk_ranking`.
+
+**Inputs**: `fleet_risk_scores.json`, `fleet_metadata.json` (via `/work/fleet/` mount from `input_files`)
+**Outputs**: JSON to stdout
+
+### 2.15 `tasks/control_action.py`
+
+**Purpose**: Fleet control actions invoked by the AI agent through the governance API.
+
+**Actions**: `underclock` (set clock % of stock), `maintenance` (schedule inspection/repair), `shutdown` (emergency power-off). Reads fleet data from `/work/fleet/` to validate constraints (fleet capacity, device existence).
+
+### 2.16 `tasks/pipeline_status.py`
+
+**Purpose**: Query the Validance REST API for the latest `mdk.score` pipeline run. Returns `session_hash`, `input_files` refs, and cycle info.
+
+**API flow**:
+1. `GET /api/runs?workflow_name=mdk.score&status=SUCCESS&limit=1` → latest score run
+2. `GET /api/variables/{score_hash}` → risk_scores file ref
+3. `parameters.continued_from` → pre_processing hash → metadata file ref
+
+No workspace mount needed. Uses stdlib `urllib.request`.
 
 ---
 
 ## 3. Data Contracts
 
-Schemas for all files that flow between tasks. Each schema is documented once; producers and consumers reference this section.
+Schemas for all inter-task files.
 
 ### 3.1 `telemetry.parquet`
 
-**Producer**: [`tasks/ingest.py`](#ingest) | **Consumers**: [`tasks/features.py`](#features)
+**Producer**: `tasks/ingest.py` | **Consumer**: `tasks/features.py`
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -588,259 +397,142 @@ Schemas for all files that flow between tasks. Each schema is documented once; p
 | `hashboard_count_active` | int64 | Active hashboards |
 | `operational_state` | string | RUNNING, CURTAILED, MAINTENANCE, FAILED |
 | `economic_margin_usd` | float64 | Hourly profit margin ($) |
-| `label_thermal_deg` | int64 | Binary: thermal degradation |
-| `label_psu_instability` | int64 | Binary: PSU instability |
-| `label_hashrate_decay` | int64 | Binary: hashrate decay |
-| `label_any_anomaly` | int64 | Binary: any anomaly |
-| `label_fan_bearing_wear` | int64 | Binary |
-| `label_capacitor_aging` | int64 | Binary |
-| `label_dust_fouling` | int64 | Binary |
-| `label_thermal_paste_deg` | int64 | Binary |
-| `label_solder_joint_fatigue` | int64 | Binary |
-| `label_coolant_loop_fouling` | int64 | Binary |
-| `label_firmware_cliff` | int64 | Binary |
+| `label_*` | int64 | Binary anomaly labels (10 types + `label_any_anomaly`) |
 
 **Invariants**: No duplicate (timestamp, device_id). Sorted by (device_id, timestamp).
 
 ### 3.2 `features.parquet`
 
-**Producer**: [`tasks/features.py`](#features) | **Consumers**: [`tasks/kpi.py`](#kpi)
+**Producer**: `tasks/features.py` | **Consumer**: `tasks/kpi.py`
 
-All columns from `telemetry.parquet`, plus:
-
-**Device constants** (joined from metadata):
-
-| Column | Type |
-|--------|------|
-| `stock_clock` | float64 |
-| `stock_voltage` | float64 |
-| `nominal_hashrate` | float64 |
-| `nominal_power` | float64 |
-| `nominal_efficiency` | float64 |
-
-**Rolling statistics** — for each of `[temperature_c, power_w, hashrate_th, voltage_v, cooling_power_w, efficiency_jth]`:
-
-| Pattern | Windows |
-|---------|---------|
-| `{col}_mean_1h`, `{col}_std_1h` | 12 samples |
-| `{col}_mean_12h` | 144 samples |
-| `{col}_mean_24h`, `{col}_std_24h`, `{col}_dev_24h` | 288 samples |
-
-Plus `hashrate_th_mean_30m`, `hashrate_th_std_30m` (6 samples).
-
-**Rate of change** — for `[temperature_c, power_w, hashrate_th, voltage_v]`:
-
-| Column | Computation |
-|--------|-------------|
-| `d_{col}` | `.diff()` per device |
-| `d_{col}_smooth` | 12-sample rolling mean of diffs |
-
-**Cross-device** — for `[temperature_c, power_w, hashrate_th, efficiency_jth]`:
-
-| Column | Computation |
-|--------|-------------|
-| `{col}_fleet_z` | Z-score within same model per timestamp |
-
-**Interaction features**:
-
-| Column | Formula |
-|--------|---------|
-| `power_per_ghz` | `power_w / clock_ghz` |
-| `thermal_headroom_c` | `85.0 - temperature_c` |
-| `cooling_effectiveness` | `(temperature_c - ambient_temp_c) / cooling_power_w` |
-| `hashrate_ratio` | `hashrate_th / nominal_hashrate` |
-| `voltage_deviation` | `voltage_v - stock_voltage` |
-
-Total: ~55 columns on top of the raw telemetry.
+All columns from `telemetry.parquet` plus ~55 engineered features. See [`feature-catalog.md`](feature-catalog.md) for the complete schema.
 
 ### 3.3 `kpi_timeseries.parquet`
 
-**Producer**: [`tasks/kpi.py`](#kpi) | **Consumers**: [`tasks/train_model.py`](#train-model), [`tasks/score.py`](#score), [`tasks/trend_analysis.py`](#trend-analysis), [`tasks/optimize.py`](#optimize), [`tasks/report.py`](#report)
+**Producer**: `tasks/kpi.py` | **Consumers**: train_model, score, trend_analysis, optimize, report
 
 All columns from `features.parquet`, plus:
 
-| Column | Type | Formula | Notes |
-|--------|------|---------|-------|
-| `eta_v` | float64 | `(V_optimal / V_actual)^2` | Voltage efficiency, clipped [0, 2] |
-| `p_cooling_norm` | float64 | `P_cool * (T_chip - 25) / max(T_chip - T_amb, 1)` | Normalized cooling power |
-| `te_base` | float64 | `power_w / hashrate_th` | Naive J/TH |
-| `voltage_penalty` | float64 | `1.0 / eta_v` | Voltage impact multiplier |
-| `cooling_ratio` | float64 | `(power_w + p_cooling_norm) / power_w` | Cooling overhead ratio |
-| `true_efficiency` | float64 | `(power_w + p_cooling_norm) / (hashrate_th * eta_v)` | True Efficiency (J/TH) |
-| `te_nominal` | float64 | `(P + 0.10*P) / H` at stock | Per-device nominal TE |
-| `te_score` | float64 | `te_nominal / true_efficiency` | Health score (1.0 = nominal) |
+| Column | Type | Formula |
+|--------|------|---------|
+| `eta_v` | float64 | `(V_optimal / V_actual)^2`, clipped [0, 2] |
+| `p_cooling_norm` | float64 | `P_cool * (T_chip - 25) / max(T_chip - T_amb, 1)` |
+| `te_base` | float64 | `power_w / hashrate_th` |
+| `voltage_penalty` | float64 | `1.0 / eta_v` |
+| `cooling_ratio` | float64 | `(power_w + p_cooling_norm) / power_w` |
+| `true_efficiency` | float64 | `(power_w + p_cooling_norm) / (hashrate_th * eta_v)` |
+| `te_nominal` | float64 | `(P + 0.10*P) / H` at stock |
+| `te_score` | float64 | `te_nominal / true_efficiency` (1.0 = nominal) |
 
-**Invariant**: KPI columns are NaN for idle samples (hashrate_th <= 0).
+KPI columns are NaN for idle samples (hashrate_th <= 0).
 
 ### 3.4 `fleet_risk_scores.json`
 
-**Producer**: [`tasks/score.py`](#score) | **Consumers**: [`tasks/trend_analysis.py`](#trend-analysis), [`tasks/optimize.py`](#optimize), [`tasks/report.py`](#report)
+**Producer**: `tasks/score.py` | **Consumers**: trend_analysis, optimize, report
 
-```
+```json
 {
-  "scoring_window_hours": int,          // Always 24
-  "window_start": str,                  // ISO timestamp
-  "window_end": str,
-  "samples_scored": int,
-  "threshold": float,                   // Default 0.3
+  "scoring_window_hours": 24,
+  "window_start": "ISO timestamp",
+  "window_end": "ISO timestamp",
+  "samples_scored": 288,
+  "threshold": 0.3,
   "model_versions": {
-    "classifier": str,                  // Artifact filename
-    "regressor_version": int | null
+    "classifier": "anomaly_model.joblib",
+    "regressor_version": 1
   },
-  "device_risks": [                     // Sorted by mean_risk descending
+  "device_risks": [
     {
-      "device_id": str,
-      "model": str,
-      "mean_risk": float,              // [0, 1] — average anomaly prob over window
-      "max_risk": float,               // [0, 1] — peak probability
-      "pct_flagged": float,            // [0, 1] — fraction of samples > threshold
-      "last_risk": float,              // [0, 1] — most recent probability
-      "flagged": bool,                 // mean_risk > threshold
+      "device_id": "ASIC-001",
+      "model": "S21XP",
+      "mean_risk": 0.05,
+      "max_risk": 0.12,
+      "pct_flagged": 0.0,
+      "last_risk": 0.03,
+      "flagged": false,
       "latest_snapshot": {
-        "timestamp": str,
-        "te_score": float,
-        "true_efficiency": float,
-        "temperature_c": float,
-        "voltage_v": float,
-        "hashrate_th": float,
-        "power_w": float,
-        "cooling_power_w": float,
-        "ambient_temp_c": float,
-        "operating_mode": str
+        "timestamp": "...", "te_score": 0.98, "true_efficiency": 15.8,
+        "temperature_c": 52.0, "voltage_v": 0.38, "hashrate_th": 270.0,
+        "power_w": 4200.0, "cooling_power_w": 450.0, "ambient_temp_c": 20.0,
+        "operating_mode": "normal"
       },
-      "predictions": {                 // OPTIONAL — only if regression model present
-        "te_score_1h": {"p10": float, "p50": float, "p90": float},
-        "te_score_6h": {"p10": float, "p50": float, "p90": float},
-        "te_score_24h": {"p10": float, "p50": float, "p90": float},
-        "te_score_7d": {"p10": float, "p50": float, "p90": float}
+      "predictions": {
+        "te_score_1h": {"p10": 0.95, "p50": 0.97, "p90": 0.99},
+        "te_score_6h": {"p10": 0.93, "p50": 0.96, "p90": 0.99},
+        "te_score_24h": {"p10": 0.90, "p50": 0.95, "p90": 0.98},
+        "te_score_7d": {"p10": 0.85, "p50": 0.93, "p90": 0.97}
       },
-      "predicted_crossings": {         // OPTIONAL
-        "te_0.8": {"horizon": str, "confidence": str, "p50": float} | null,
-        "te_0.6": {"horizon": str, "confidence": str, "p50": float} | null
+      "predicted_crossings": {
+        "te_0.8": null,
+        "te_0.6": null
       }
     }
   ]
 }
 ```
 
+`predictions` and `predicted_crossings` are present only if a regression model is available.
+
 ### 3.5 `trend_analysis.json`
 
-**Producer**: [`tasks/trend_analysis.py`](#trend-analysis) | **Consumers**: [`tasks/optimize.py`](#optimize), [`tasks/report.py`](#report)
+**Producer**: `tasks/trend_analysis.py` | **Consumers**: optimize, report
 
-```
+```json
 {
-  "analysis_version": str,             // "3.0-trend"
-  "sample_interval_minutes": int,      // 5
+  "analysis_version": "3.0-trend",
+  "sample_interval_minutes": 5,
   "windows": {"1h": 12, "6h": 72, "24h": 288, "7d": 2016},
   "cusum_params": {"h": 8.0, "k": 0.5},
   "devices": [
     {
-      "device_id": str,
-      "current_state": {
-        "te_score": float,
-        "temperature_c": float,
-        "mean_risk": float
+      "device_id": "ASIC-001",
+      "current_state": {"te_score": 0.98, "temperature_c": 52.0, "mean_risk": 0.05},
+      "te_trends": {
+        "1h": {"slope_per_hour": -0.001, "r_squared": 0.85, "direction": "stable", "n_samples": 12},
+        "6h": {"slope_per_hour": -0.002, "r_squared": 0.72, "direction": "stable", "n_samples": 72},
+        "24h": {"slope_per_hour": -0.003, "r_squared": 0.65, "direction": "stable", "n_samples": 288},
+        "7d": {"slope_per_hour": -0.001, "r_squared": 0.55, "direction": "stable", "n_samples": 2016}
       },
-      "te_trends": {                   // One entry per window
-        "1h"|"6h"|"24h"|"7d": {
-          "slope_per_hour": float,     // TE_score change per hour
-          "r_squared": float,          // [0, 1] — fit quality
-          "direction": str,            // falling_fast|declining|stable|recovering|recovering_fast
-          "n_samples": int
-        }
-      },
-      "temp_trends": {                 // 6h and 24h only
-        "6h"|"24h": {
-          "slope_per_hour": float,
-          "r_squared": float,
-          "last_ewma": float,
-          "n_samples": int
-        }
-      },
-      "risk_trends": {                 // 1h only
-        "1h": {
-          "slope_per_hour": float,
-          "r_squared": float,
-          "direction": str,
-          "n_samples": int
-        }
-      },
-      "regime": {
-        "change_detected": bool,
-        "change_index": int | null,
-        "direction": str,              // "increasing"|"decreasing"|"stable"
-        "max_cusum_pos": float,
-        "max_cusum_neg": float
-      },
+      "temp_trends": {"6h": {"slope_per_hour": 0.1, "r_squared": 0.3, "last_ewma": 52.0, "n_samples": 72}},
+      "risk_trends": {"1h": {"slope_per_hour": 0.0, "r_squared": 0.1, "direction": "stable", "n_samples": 12}},
+      "regime": {"change_detected": false, "change_index": null, "direction": "stable"},
       "projections": {
-        "0.8": {                       // DEGRADED threshold
-          "hours_to_crossing": float | null,
-          "confidence": float,         // = R^2 of underlying trend
-          "will_cross": bool
-        },
-        "0.6": { ... }                // CRITICAL threshold
+        "0.8": {"hours_to_crossing": null, "confidence": 0.65, "will_cross": false},
+        "0.6": {"hours_to_crossing": null, "confidence": 0.65, "will_cross": false}
       },
-      "primary_direction": str,        // 24h window direction
-      "primary_slope_per_hour": float,
-      "primary_r_squared": float
+      "primary_direction": "stable",
+      "primary_slope_per_hour": -0.003,
+      "primary_r_squared": 0.65
     }
   ],
-  "fleet_summary": {
-    "device_count": int,
-    "regime_changes": int,
-    "direction_distribution": {
-      "stable": int, "declining": int, "falling_fast": int,
-      "recovering": int, "recovering_fast": int
-    }
-  }
+  "fleet_summary": {"device_count": 10, "regime_changes": 0, "direction_distribution": {"stable": 10}}
 }
 ```
 
 ### 3.6 `fleet_actions.json`
 
-**Producer**: [`tasks/optimize.py`](#optimize) | **Consumers**: [`tasks/report.py`](#report), SafeClaw
+**Producer**: `tasks/optimize.py` | **Consumers**: report, AI agent
 
-```
+```json
 {
-  "controller_version": str,           // "2.0-tier-only"
-  "scoring_window": {
-    "start": str,
-    "end": str
-  },
-  "tier_counts": {
-    "CRITICAL": int,
-    "WARNING": int,
-    "DEGRADED": int,
-    "HEALTHY": int
-  },
-  "safety_constraints_applied": [str], // e.g. ["thermal_hard_limit_80C"]
+  "controller_version": "2.0-tier-only",
+  "scoring_window": {"start": "...", "end": "..."},
+  "tier_counts": {"CRITICAL": 0, "WARNING": 2, "DEGRADED": 1, "HEALTHY": 7},
+  "safety_constraints_applied": [],
   "actions": [
     {
-      "device_id": str,
-      "model": str,
-      "tier": str,                     // CRITICAL|WARNING|DEGRADED|HEALTHY
-      "risk_score": float,
-      "te_score": float,
+      "device_id": "ASIC-009",
+      "model": "S19XP",
+      "tier": "WARNING",
+      "risk_score": 0.55,
+      "te_score": 0.78,
       "commands": [
-        {
-          "type": str,                 // set_clock|set_power_mode|schedule_inspection|...
-          "value_ghz": float,          // for set_clock
-          "value": str,                // for set_power_mode, set_fan_mode
-          "urgency": str,              // for schedule_inspection
-          "value_seconds": int,        // for set_monitoring_interval
-          "priority": str,             // HIGH|MEDIUM|LOW
-          "mos_method": str | null,    // MOS RPC name or null if operational
-          "mos_note": str              // present when mos_method is null
-        }
+        {"type": "set_clock", "value_ghz": 1.33, "priority": "HIGH", "mos_method": "setFrequency"},
+        {"type": "schedule_inspection", "urgency": "next_window", "priority": "MEDIUM", "mos_method": null}
       ],
-      "rationale": [str],             // Human-readable explanation lines
-      "trend_context": {               // OPTIONAL — only if trend_analysis.json exists
-        "direction": str,
-        "slope_per_hour": float,
-        "r_squared": float,
-        "regime_change": bool
-      },
-      "mos_alert_codes": [str]        // e.g. ["P:1", "R:1"]
+      "rationale": ["TE score 0.78 below DEGRADED threshold (0.80)", "Underclocking to reduce thermal stress"],
+      "trend_context": {"direction": "declining", "slope_per_hour": -0.008, "r_squared": 0.72, "regime_change": false},
+      "mos_alert_codes": ["P:1", "R:1"]
     }
   ]
 }
@@ -861,52 +553,39 @@ All columns from `features.parquet`, plus:
 
 ### 3.7 `model_metrics.json`
 
-**Producer**: [`tasks/train_model.py`](#train-model) | **Consumers**: [`tasks/report.py`](#report)
+**Producer**: `tasks/train_model.py` | **Consumer**: `tasks/report.py`
 
-```
+```json
 {
-  "model": str,                        // "XGBClassifier"
-  "train_samples": int,
-  "anomaly_rate": float,
-  "devices": int,
-  "feature_count": int,
-  "threshold": float,
-  "top_features": [
-    {"feature": str, "importance": float}
-  ],
+  "model": "XGBClassifier",
+  "train_samples": 1500000,
+  "anomaly_rate": 0.41,
+  "devices": 57,
+  "feature_count": 50,
+  "threshold": 0.3,
+  "top_features": [{"feature": "te_score", "importance": 0.15}],
   "per_anomaly_type": {
-    "<type_name>": {
-      "train_positives": int,
-      "positive_rate": float,
-      "devices_affected": int,
-      "top_features": [{"feature": str, "importance": float}]
-    } | {"skipped": true, "reason": str}  // if no positives
+    "thermal_deg": {"train_positives": 50000, "positive_rate": 0.03, "devices_affected": 8, "top_features": []}
   },
-  "regression": {                      // OPTIONAL — only if regression trained
-    "model_type": str,
-    "version": int,
-    "promoted": bool,
-    "horizons": [str],
-    "quantiles": [float],
-    "feature_count": int,
-    "per_horizon": {
-      "<horizon>": {"train_samples": int}
-    }
+  "regression": {
+    "model_type": "multi_horizon_quantile_regression",
+    "version": 1,
+    "horizons": ["1h", "6h", "24h", "7d"],
+    "quantiles": [0.1, 0.5, 0.9],
+    "feature_count": 58
   }
 }
 ```
 
 ### 3.8 `anomaly_model.joblib`
 
-**Producer**: [`tasks/train_model.py`](#train-model) | **Consumer**: [`tasks/score.py`](#score)
-
-Joblib-pickled Python dict:
+**Producer**: `tasks/train_model.py` | **Consumer**: `tasks/score.py`
 
 ```python
 {
     "model": XGBClassifier,            # Trained binary classifier
-    "feature_names": [str],            # 50 feature names (see §2.9)
-    "threshold": float                 # 0.3 default, CLI-overridable
+    "feature_names": [str],            # 50 feature names
+    "threshold": float                 # 0.3 default
 }
 ```
 
@@ -914,9 +593,7 @@ Usage: `proba = model.predict_proba(X[feature_names])[:, 1]`, then `flagged = pr
 
 ### 3.9 `regression_model_v{N}.joblib`
 
-**Producer**: [`tasks/train_model.py`](#train-model) | **Consumer**: [`tasks/score.py`](#score)
-
-Joblib-pickled Python dict:
+**Producer**: `tasks/train_model.py` | **Consumer**: `tasks/score.py`
 
 ```python
 {
@@ -925,93 +602,36 @@ Joblib-pickled Python dict:
     "horizons": ["1h", "6h", "24h", "7d"],
     "quantiles": [0.1, 0.5, 0.9],
     "feature_names": [str],            # 50 base + 8 temporal = 58
-    "models": {
-        "1h": {"p10": XGBRegressor, "p50": XGBRegressor, "p90": XGBRegressor},
-        "6h": {...},
-        "24h": {...},
-        "7d": {...}
-    },
-    "trained_at": str                  # ISO timestamp
+    "models": {"1h": {"p10": XGBRegressor, "p50": XGBRegressor, "p90": XGBRegressor}, ...},
+    "trained_at": str
 }
 ```
 
-Temporal features (8, added by score.py before prediction):
-`te_score_lag_1h`, `te_score_lag_6h`, `te_score_lag_24h`, `te_score_slope_1h`, `te_score_slope_6h`, `te_score_volatility_24h`, `te_score_slope_24h`, `te_score_slope_7d`.
-
-### 3.10 `training_metadata.json`
-
-**Producer**: [`scripts/generate_training_corpus.py`](#generate-corpus) | **Consumer**: reference/verification
-
-```
-{
-  "generator": str,
-  "generated_at": str,
-  "parameters": {
-    "total_rows": int,
-    "scenario_count": int,
-    "seed_override": int | null,
-    "columns": int,
-    "num_devices": int
-  },
-  "fleet": [
-    {
-      "device_id": str,
-      "model": str,
-      "stock_clock_ghz": float,
-      "stock_voltage_v": float,
-      "nominal_hashrate_th": float,
-      "nominal_power_w": float,
-      "nominal_efficiency_jth": float
-    }
-  ],
-  "scenarios": [
-    {
-      "name": str,
-      "seed": int,
-      "duration_days": int,
-      "device_count": int,
-      "total_rows": int,
-      "anomalies": [
-        {
-          "device_idx": int,
-          "type": str,
-          "start_day": float,
-          "ramp_days": float,
-          "severity": float
-        }
-      ]
-    }
-  ],
-  "label_stats": {"<label_column>": int},
-  "data_hash_sha256": str
-}
-```
-
-### 3.11 `fleet_metadata.json` (input)
+### 3.10 `fleet_metadata.json` (input)
 
 **Producer**: external | **Consumers**: all tasks
 
-```
+```json
 {
   "fleet": [
     {
-      "device_id": str,
-      "model": str,
-      "stock_clock_ghz": float,
-      "stock_voltage_v": float,
-      "nominal_hashrate_th": float,
-      "nominal_power_w": float,
-      "nominal_efficiency_jth": float
+      "device_id": "ASIC-001",
+      "model": "S21XP",
+      "stock_clock_ghz": 1.40,
+      "stock_voltage_v": 0.38,
+      "nominal_hashrate_th": 270.0,
+      "nominal_power_w": 4200.0,
+      "nominal_efficiency_jth": 15.5
     }
   ]
 }
 ```
 
-### 3.12 `_validance_vars.json`
+### 3.11 `_validance_vars.json`
 
 **Producer**: every task | **Consumer**: Validance kernel
 
-Each task writes this file with task-specific output variables. Not consumed by other tasks — only by the Validance engine for workflow variable propagation.
+Task-specific output variables for workflow variable propagation. Not consumed by other tasks.
 
 | Task | Variables |
 |------|-----------|

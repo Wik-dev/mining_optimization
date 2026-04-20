@@ -13,11 +13,10 @@ After completion, pipeline outputs in /work/ are available for SafeClaw fleet
 queries (fleet_risk_scores.json, fleet_actions.json, trend_analysis.json,
 report.html).
 
-Optional post-inference steps (Pattern A push):
-  Step 4: Write fleet_summary.json to OpenClaw workspace (--workspace)
-  Step 5: Notify OpenClaw agent via CLI (--openclaw-bin). Agent reads
-          fleet_summary.json, reasons, proposes actions via safeclaw(). Response
-          returned programmatically AND delivered to Telegram.
+Optional post-inference step (Pattern A push):
+  Step 4: Notify OpenClaw agent via gateway webhook (--gateway-url). Pushes
+          inline pipeline refs (session_hash + input_files) so the agent can
+          call SafeClaw fleet actions directly. No workspace file needed.
 
 Usage:
     python scripts/orchestrate_inference.py \\
@@ -39,14 +38,11 @@ Author: Wiktor (MDK assignment, April 2026)
 
 import argparse
 import hashlib
-import json
 import logging
 import os
-import subprocess
 import sys
 import time
 from datetime import datetime
-from pathlib import Path
 
 import requests
 
@@ -106,7 +102,31 @@ def poll_completion(session: requests.Session, api_url: str,
     raise TimeoutError(f"Workflow {workflow_name} ({workflow_hash}) did not complete within {POLL_TIMEOUT}s")
 
 
-SCRIPTS_DIR = Path(__file__).resolve().parent
+def _notify_agent(gateway_url: str, gateway_token: str, message: str) -> bool:
+    """POST to OpenClaw /hooks/agent to trigger AI reasoning on flagged devices.
+
+    Uses the gateway's webhook endpoint to inject a message into the active
+    agent session. The agent then follows HEARTBEAT.md to propose fleet
+    actions via SafeClaw.
+    """
+    url = f"{gateway_url.rstrip('/')}/hooks/agent"
+    try:
+        resp = requests.post(
+            url,
+            json={"message": message},
+            headers={"Authorization": f"Bearer {gateway_token}"},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            logger.info("  Agent notified (runId=%s)", data.get("runId", "?"))
+            return True
+        else:
+            logger.warning("  Agent push failed: HTTP %d — %s",
+                           resp.status_code, resp.text[:200])
+    except (ConnectionError, OSError) as e:
+        logger.warning("  Agent push failed: %s", e)
+    return False
 
 
 def _resolve_corpus_from_chain(session: requests.Session, api_url: str,
@@ -165,12 +185,13 @@ def main():
     parser.add_argument("--training-hash", required=True,
                         help="Workflow hash of the training run. Model artifacts "
                              "resolved via deep context (continue_from chain).")
-    parser.add_argument("--workspace",
-                        help="OpenClaw workspace path for fleet summary output "
-                             "(default: OPENCLAW_WORKSPACE env var)")
-    parser.add_argument("--openclaw-bin",
-                        help="Path to openclaw CLI binary "
-                             "(default: OPENCLAW_BIN env var, or 'openclaw')")
+    parser.add_argument("--gateway-url", type=str,
+                        help="OpenClaw gateway URL for AI agent push "
+                             "(default: CTX_GATEWAY_URL env var). "
+                             "When set, notifies the agent after inference completes.")
+    parser.add_argument("--gateway-token", type=str,
+                        help="OpenClaw gateway hooks auth token "
+                             "(default: CTX_GATEWAY_TOKEN env var)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO,
@@ -219,7 +240,7 @@ def main():
     logger.info("  Triggered: %s", wf_hash)
     poll_completion(session, args.api_url, "mdk.pre_processing", wf_hash)
     logger.info("  Completed")
-    prev_hash = wf_hash
+    pp_hash = wf_hash
 
     # ── Step 2: Score ──────────────────────────────────────────────────────
     # No model_path parameter — score resolves @train_anomaly_model:* from deep context.
@@ -228,12 +249,12 @@ def main():
         session, args.api_url, "mdk.score",
         parameters={},
         session_hash=session_hash,
-        continue_from=prev_hash,
+        continue_from=pp_hash,
     )
     logger.info("  Triggered: %s", wf_hash)
     poll_completion(session, args.api_url, "mdk.score", wf_hash)
     logger.info("  Completed")
-    prev_hash = wf_hash
+    score_hash = wf_hash
 
     # ── Step 3: Analyze ────────────────────────────────────────────────────
     # Model metrics also resolved via deep context (@train_anomaly_model:model_metrics).
@@ -242,87 +263,41 @@ def main():
         session, args.api_url, "mdk.analyze",
         parameters={},
         session_hash=session_hash,
-        continue_from=prev_hash,
+        continue_from=score_hash,
     )
     logger.info("  Triggered: %s", wf_hash)
     poll_completion(session, args.api_url, "mdk.analyze", wf_hash)
     logger.info("  Completed")
+    analyze_hash = wf_hash
 
-    # ── Step 4 (optional): Write fleet summary to OpenClaw workspace ──────
-    workspace = getattr(args, 'workspace', None) or os.environ.get('OPENCLAW_WORKSPACE')
-    if workspace:
-        logger.info("Step 4: Writing fleet summary to %s", workspace)
-        # Deploy HEARTBEAT.md on first run (idempotent — overwrites if present)
-        heartbeat_path = Path(workspace) / "HEARTBEAT.md"
-        deploy_flag = [] if heartbeat_path.exists() else ["--deploy-heartbeat"]
-        summary_result = subprocess.run([
-            sys.executable, str(SCRIPTS_DIR / "write_fleet_summary.py"),
-            "--analyze-hash", wf_hash,
-            "--session-hash", session_hash,
-            "--workspace", workspace,
-            "--api-url", args.api_url,
-        ] + deploy_flag, capture_output=True, text=True)
-        if summary_result.returncode != 0:
-            logger.warning("Fleet summary write failed: %s", summary_result.stderr)
-        else:
-            logger.info("Fleet summary written to %s/fleet_summary.json", workspace)
-    else:
-        logger.info("Skipping fleet summary (no --workspace or OPENCLAW_WORKSPACE configured)")
-
-    # ── Step 5 (optional): Notify OpenClaw agent — Pattern A push ────────
-    # Uses `openclaw agent` CLI to send a message through the gateway's
-    # WebSocket RPC. The agent processes the message, reads fleet_summary.json,
-    # reasons about flagged devices, and may call safeclaw() to propose actions.
-    # Response returned programmatically AND delivered to Telegram (--deliver).
-    # Heartbeat (Pattern B) runs independently on its own timer.
-    openclaw_bin = args.openclaw_bin or os.environ.get('OPENCLAW_BIN', 'openclaw')
-    if workspace:
-        logger.info("Step 5: Notifying OpenClaw agent via CLI (%s)", openclaw_bin)
+    # ── Step 4 (optional): Notify OpenClaw agent — Pattern A push ────────
+    # POST to OpenClaw gateway /hooks/agent with inline pipeline refs.
+    # The agent follows HEARTBEAT.md: calls fleet_status_query with the refs
+    # to get live data, reasons about flagged devices, proposes actions.
+    # Same pattern as orchestrate_simulation.py — no workspace file needed.
+    gateway_url = args.gateway_url or os.environ.get("CTX_GATEWAY_URL", "")
+    gateway_token = args.gateway_token or os.environ.get("CTX_GATEWAY_TOKEN", "")
+    if gateway_url and gateway_token:
+        logger.info("Step 4: Notifying OpenClaw agent via gateway (%s)", gateway_url)
         message = (
-            f"[{datetime.utcnow().strftime('%a %Y-%m-%d %H:%M UTC')}] "
-            "Fleet inference pipeline complete. "
-            f"New fleet_summary.json written (session {session_hash}). "
-            "Read it and act on any flagged devices per HEARTBEAT.md instructions."
+            f"Fleet inference pipeline completed "
+            f"(cutoff: {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')}).\n"
+            f"session_hash: {session_hash}\n"
+            f"input_files:\n"
+            f"  fleet_risk_scores.json: @{score_hash}.score_fleet:risk_scores\n"
+            f"  fleet_metadata.json: @{pp_hash}.ingest_telemetry:metadata\n"
+            f"Follow HEARTBEAT.md."
         )
-        # Build CLI command. --dev flag uses the dev profile (port 19001).
-        # --deliver sends the response to the configured Telegram channel.
-        # --agent main targets the main agent session.
-        # --json returns structured output for programmatic consumption.
-        cmd = [
-            openclaw_bin, "--dev", "agent",
-            "--agent", "main",
-            "--message", message,
-            "--deliver",
-            "--json",
-            "--timeout", "180",
-        ]
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=200,
-            )
-            if result.returncode == 0:
-                try:
-                    data = json.loads(result.stdout)
-                    status = data.get("status", "unknown")
-                    logger.info("  OpenClaw agent responded: %s", status)
-                except json.JSONDecodeError:
-                    logger.info("  OpenClaw agent responded (non-JSON): %s",
-                                result.stdout[:200].strip())
-            else:
-                logger.warning("  OpenClaw agent CLI failed (exit %d): %s",
-                               result.returncode, result.stderr[:200].strip())
-        except subprocess.TimeoutExpired:
-            logger.warning("  OpenClaw agent CLI timed out (agent may still be processing)")
-        except FileNotFoundError:
-            logger.warning("  openclaw binary not found at '%s'. "
-                           "Set --openclaw-bin or OPENCLAW_BIN.", openclaw_bin)
+        _notify_agent(gateway_url, gateway_token, message)
+    elif gateway_url and not gateway_token:
+        logger.warning("--gateway-url set but --gateway-token missing — agent push disabled")
     else:
-        logger.info("Skipping OpenClaw push (no --workspace configured)")
+        logger.info("Skipping agent push (no --gateway-url configured)")
 
     # ── Summary ────────────────────────────────────────────────────────────
     print(f"\nInference complete:")
     print(f"  Session:      {session_hash}")
-    print(f"  Analyze hash: {wf_hash}")
+    print(f"  Analyze hash: {analyze_hash}")
     print(f"  Outputs available in /work/: fleet_risk_scores.json, "
           f"fleet_actions.json, trend_analysis.json, report.html")
 

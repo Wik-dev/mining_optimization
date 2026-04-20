@@ -234,13 +234,12 @@ They poll for completion and pass output URIs between steps via `continue_from`.
 │  └────────────────────────────────────────────────────────────────────┘ │
 │                                                                         │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │ write_fleet_summary.py  (LEGACY — no longer in critical path)       │ │
+│  │ write_fleet_summary.py  (REMOVED)                                   │ │
 │  │                                                                    │ │
 │  │ Previously bridged ML output → AI agent via workspace files.      │ │
 │  │ Replaced by: orchestrator push + SafeClaw fleet_status_query.     │ │
-│  │ Agent now reads Validance artifacts directly — no filesystem       │ │
-│  │ bridge needed. Kept for standalone inference (orchestrate_         │ │
-│  │ inference.py) but not used in simulation flow.                    │ │
+│  │ Both orchestrators now push inline @hash.task:var refs via the    │ │
+│  │ gateway webhook — agent calls SafeClaw directly, no file needed.  │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 │                                                                         │
 │  ┌────────────────────────────────────────────────────────────────────┐ │

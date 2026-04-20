@@ -62,6 +62,8 @@ def create_workflow() -> Workflow:
             ' --training-hash "$CTX_TRAINING_HASH"'
             ' --api-url "$CTX_API_URL"'
             ' --interval-days "$CTX_INTERVAL_DAYS"'
+            ' --gateway-url "$CTX_GATEWAY_URL"'
+            ' --gateway-token "$CTX_GATEWAY_TOKEN"'
         ),
         docker_image=TASK_IMAGE,
         inputs={
