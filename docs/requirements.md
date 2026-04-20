@@ -61,7 +61,7 @@ Forward references (UR → SR → DR) and backward references (DR → SR → UR)
 | Document              | Location                        |
 | --------------------- | ------------------------------- |
 | Assignment brief      | MDK Plan B (Tether)             |
-| Technical report      | `docs/technical-report.md`      |
+| Technical report      | `docs/technical-report-final.md` |
 | MOS platform audit    | `docs/mos_platform_audit.md`    |
 | SafeClaw requirements | `safeclaw/docs/requirements.md` |
 | SafeClaw architecture | `safeclaw/docs/architecture.md` |

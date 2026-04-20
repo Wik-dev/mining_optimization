@@ -259,7 +259,7 @@ An autonomous agent that can underclock, overclock, or shut down mining hardware
 | [`tasks/`](https://github.com/Wik-dev/mining_optimization/tree/main/tasks) | Pipeline tasks — standalone Python scripts (ingest, features, KPI, train, score, trends, optimize, report) |
 | [`scripts/`](https://github.com/Wik-dev/mining_optimization/tree/main/scripts) | Orchestrators, physics engine, data generation |
 | [`workflows/`](https://github.com/Wik-dev/mining_optimization/tree/main/workflows) | Workflow DAG declarations (Validance SDK) |
-| [`docs/`](https://github.com/Wik-dev/mining_optimization/tree/main/docs) | [Technical report](https://github.com/Wik-dev/mining_optimization/blob/main/docs/technical-report.md), [feature catalog](https://github.com/Wik-dev/mining_optimization/blob/main/docs/feature-catalog.md), [user guide](https://github.com/Wik-dev/mining_optimization/blob/main/docs/user-guide.md) |
+| [`docs/`](https://github.com/Wik-dev/mining_optimization/tree/main/docs) | [Technical report](https://github.com/Wik-dev/mining_optimization/blob/main/docs/technical-report-final.md), [feature catalog](https://github.com/Wik-dev/mining_optimization/blob/main/docs/feature-catalog.md), [user guide](https://github.com/Wik-dev/mining_optimization/blob/main/docs/user-guide.md) |
 | [`example_output_report/`](https://github.com/Wik-dev/mining_optimization/tree/main/example_output_report) | Sample pipeline output ([`sample-report.html`](https://github.com/Wik-dev/mining_optimization/blob/main/example_output_report/sample-report.html)) |
 
 ### Verification and validation

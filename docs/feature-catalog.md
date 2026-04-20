@@ -1,6 +1,6 @@
 # Feature Catalog
 
-Complete reference of all features used in the fleet intelligence pipeline. Referenced from the [Technical Report](technical-report.md) §4.2.
+Complete reference of all features used in the fleet intelligence pipeline. Referenced from the [Technical Report](technical-report-final.md) §4.2.
 
 75 features are engineered per device-timestep by `tasks/features.py`. The classifier (`tasks/train_model.py`) uses a curated subset of 50; the quantile regressor adds 8 temporal features for a total of 58. Features marked with **[C]** are used by the classifier; **[R]** indicates regressor-only. Features without a marker are computed but not currently used by any model (available for future iterations).
 
@@ -77,7 +77,7 @@ Physics-motivated combinations encoding known ASIC relationships.
 
 ## 5. TE Decomposition (6 features, from `kpi.py`)
 
-Not counted in the 75 engineered features (computed by a separate pipeline task), but used by the classifier. See [Technical Report](technical-report.md) §2 for the full TE formulation.
+Not counted in the 75 engineered features (computed by a separate pipeline task), but used by the classifier. See [Technical Report](technical-report-final.md) §2 for the full TE formulation.
 
 | Feature | Computation | Rationale |
 |---------|-------------|-----------|

@@ -22,7 +22,7 @@ import json
 import pandas as pd
 import numpy as np
 
-# Constants (see technical-report.md §3 for derivation)
+# Constants (see technical-report-final.md §3 for derivation)
 T_REF = 25.0        # Reference ambient temperature (°C)
 VF_ALPHA = 0.6       # V/f scaling exponent for CMOS
 THERMAL_FLOOR = 1.0  # Min (T_chip - T_ambient) to avoid division by zero
