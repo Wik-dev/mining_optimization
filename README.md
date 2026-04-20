@@ -262,6 +262,52 @@ sequenceDiagram
 
 ---
 
+## Safety & Security
+
+An autonomous agent that can underclock, overclock, or shut down mining hardware introduces risks that don't exist in passive monitoring. SafeClaw + Validance enforce defense-in-depth: **multiple independent layers, any one of which is sufficient to prevent harm.**
+
+### Separation of concerns
+
+| Layer | Responsibility | Can it act on hardware? |
+|-------|---------------|------------------------|
+| **ML pipeline** | Classifies device health (deterministic, no side effects) | No |
+| **AI agent** | Proposes actions with cost-benefit rationale | No — can only *propose* |
+| **Governance (Validance)** | Approves or denies proposals via approval gate | No — gates execution |
+| **Worker containers** | Execute approved MOS commands in isolation | Yes — only after approval |
+
+The agent cannot execute on the host, cannot approve its own actions, and cannot bypass the approval gate. Even if prompt injection tricks the agent into *requesting* a harmful action, the attack surface shifts from "injection → execution" to "injection → proposal → human decision."
+
+### Approval gate & learned policies
+
+Every proposal flows through Validance's 7-stage pipeline:
+
+1. **Catalog validation** — action must match a registered template with defined schema
+2. **Rate limiting** — per-session, per-action counters prevent runaway loops
+3. **Learned policy** — auto-allow/deny based on operator-created rules (`allow-always` / `deny-always`)
+4. **Approval gate** — `human-confirm` actions block until explicit operator decision; timeout = **deny** (fail-closed)
+5. **Secret injection** — API keys injected at runtime from a secret store, never in LLM context
+6. **Container execution** — isolated Docker container with scoped filesystem and network
+7. **Result + audit** — every proposal logged with input state, decision, and outcome (tamper-evident chain)
+
+### Hard-coded safety overrides
+
+Before any AI reasoning runs, deterministic physics-based limits are enforced in code:
+
+| Override | Trigger | Action |
+|----------|---------|--------|
+| Thermal hard limit | T > 80 °C | Force clock to 80% — cannot be overridden by model or agent |
+| Cold protection | T < 10 °C | Sleep mode (coolant viscosity / PCB condensation risk) |
+| Overvoltage | V > 110% of stock | Reset frequency to stock |
+| Fleet redundancy | All same-model devices flagged | Defer lowest-risk device to maintain hashrate floor |
+
+### What the system does NOT protect against
+
+- **Container escape** — a kernel/Docker vulnerability could grant host access (mitigated: containers run as non-root `worker` uid 1000)
+- **Compromised Docker images** — the system trusts images referenced in the catalog
+- **Fleet-wide sensor drift** — if all sensors drift together, z-score features lose their baseline (acknowledged, out-of-scope for this iteration)
+
+---
+
 ## Documentation
 
 ### Deliverables
