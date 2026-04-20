@@ -42,7 +42,7 @@ Usage (CLI, Pattern 1):
     python scripts/orchestrate_simulation.py \\
         --scenario data/scenarios/summer_heatwave.json \\
         --training-hash 09605d5baa372954 \\
-        --gateway-url http://172.18.0.1:19001 \\
+        --gateway-url http://172.18.0.1:18789 \\
         --gateway-token fleet-hook-2026
 
 Usage (Pattern 5a — from mdk.fleet_simulation container):
@@ -605,7 +605,7 @@ def main():
     parser.add_argument("--gateway-url", type=str,
                         default=os.environ.get("CTX_GATEWAY_URL", ""),
                         help="OpenClaw gateway URL for AI agent push "
-                             "(e.g. http://172.18.0.1:19001). "
+                             "(e.g. http://172.18.0.1:18789). "
                              "When set, notifies the agent after cycles with flagged devices.")
     parser.add_argument("--gateway-token", type=str,
                         default=os.environ.get("CTX_GATEWAY_TOKEN", ""),
