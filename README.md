@@ -4,6 +4,8 @@ AI-driven fleet intelligence for Bitcoin mining operations.
 
 Supervised ML detection + LLM reasoning agent + human-in-the-loop governance. Detects hardware degradation days before failure, proposes cost-justified corrective actions, and enforces operator approval before anything touches hardware.
 
+**Live dashboard:** [mdk.validance.io](https://mdk.validance.io/)
+
 ![Fleet control dashboard — tier evolution, hashrate, TE score, risk heatmap](docs/assets/Screenshot_Fleet_Control.png)
 
 ![Per-device commands with tier classification and safety overrides](docs/assets/Screenshot_Command_details.png)
