@@ -289,3 +289,15 @@ sequenceDiagram
 - [github.com/tetherto](https://github.com/tetherto) — MOS source repositories (`miningos-*` prefix)
 
 Key repos: [antminer worker](https://github.com/tetherto/miningos-wrk-miner-antminer) (telemetry fields, control commands), [orchestrator](https://github.com/tetherto/miningos-wrk-ork) (approval system, fleet aggregation).
+
+---
+
+## License
+
+The code and original documentation in this repository are released under the **MIT License** (see [LICENCE](LICENCE)). This license covers the mining optimization pipeline, KPI formulation, physics engine, and architecture documentation authored as part of this assignment.
+
+**Not covered by this license:**
+
+- Contents of `project_materials/` — assignment brief and reference PDFs provided by Tether; copyright of their respective owners
+- References to MOS/MDK source repositories — those carry their own Apache-2.0 license at [github.com/tetherto](https://github.com/tetherto)
+- OpenClaw and Validance integrations — see the respective repositories for their licensing
