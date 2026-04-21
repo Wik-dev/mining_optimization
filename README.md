@@ -314,7 +314,7 @@ Before any AI reasoning runs, deterministic physics-based limits are enforced in
 
 | Document | Contents |
 |----------|----------|
-| [`docs/technical-report-final.md`](docs/technical-report-final.md) | Technical report (assignment deliverable) |
+| [`docs/MDK-Technical-Report-Lisowski.pdf`](docs/MDK-Technical-Report-Lisowski.pdf) | Technical report (assignment deliverable) |
 | [`docs/assets/architecture.svg`](docs/assets/architecture.svg) | End-to-end architecture diagram |
 | [`docs/architecture-diagram.md`](docs/architecture-diagram.md) | Architecture diagram (ASCII, detailed) |
 | [`tests/validation-report.html`](tests/validation-report.html) | Validation report — 36 SR checks against requirements |
