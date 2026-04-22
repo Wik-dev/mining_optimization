@@ -171,7 +171,20 @@ mining_optimization/
 │
 ├── workflows/                      # Workflow DAG definitions (Validance SDK)
 │   ├── fleet_intelligence.py       #   7 composable workflows (pre_processing, train, score, etc.)
-│   └── fleet_simulation.py         #   Growing-window simulation wrapper
+│   ├── fleet_simulation.py         #   Growing-window simulation wrapper
+│   └── rag_ingest.py               #   RAG ingest DAG: load → chunk → embed → build_index → build_receipt
+│
+├── modules/rag/                    # RAG library (shipped inside rag-tasks image)
+│   ├── chunker.py                  #   Markdown-aware chunker (token window + overlap)
+│   ├── embedder.py                 #   Embedding client (batched, deterministic)
+│   ├── receipt.py                  #   Content-addressed manifest (hashes + provenance)
+│   └── tasks/                      #   Pipeline tasks (one per DAG node)
+│       ├── load_documents.py       #     [1] Read knowledge corpus files
+│       ├── chunk_documents.py      #     [2] Chunk with overlap
+│       ├── embed_chunks.py         #     [3] Embed chunks → vectors
+│       ├── build_index.py          #     [4] Build FAISS-style index
+│       ├── build_receipt.py        #     [5] Emit manifest (hash, sources, stats)
+│       └── knowledge_query.py      #   Single-shot retrieval (called by AI agent)
 │
 ├── knowledge/                      # Organizational knowledge corpus (RAG)
 │   ├── company-profile.md          #   Company overview, location, capacity
@@ -189,7 +202,8 @@ mining_optimization/
 ├── data/                           # Generated data + pipeline artifacts (gitignored)
 ├── project_materials/              # Assignment brief, reference PDFs
 ├── Dockerfile                      # ML pipeline image (~500 MB)
-└── Dockerfile.control              # Fleet control image (~50 MB, stdlib only)
+├── Dockerfile.control              # Fleet control image (~50 MB, stdlib only)
+└── Dockerfile.rag-tasks            # RAG tasks image (~120 MB, bakes modules/rag + tasks)
 ```
 
 ### Docker Images
