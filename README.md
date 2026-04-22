@@ -22,6 +22,26 @@ A sample pipeline report (summer_heatwave scenario, final cycle) is available at
 
 The simulation has progressed enough that ambient temperature rose from 15°C to 22°C (the summer heatwave scenario kicking in). The agent adapted its recommendations: the M66S units jumped from 61°C to 74°C and are now flagged, so it shifted from "monitor" to "proactive underclock before SOP-012 triggers." The agent combines real-time fleet telemetry, organizational knowledge (team roster, SOPs, parts inventory via RAG), and live market data (BTC price) into a concrete weekly maintenance schedule with per-device economic justification.
 
+#### Try it yourself
+
+1. **Open the bot** — one of:
+   - Click [t.me/SafeClowBot](https://t.me/SafeClowBot)
+   - Search `@SafeClowBot` on Telegram
+   - Scan the QR code:
+
+     <img src="docs/assets/Bot-QR-code.png" alt="SafeClowBot QR code" width="180"/>
+
+2. **Pair** — send `Hi` to the bot. It replies with a pairing code (e.g. `R2BQX4NP`). Forward that code to the admin [@HappyWiktor](https://t.me/HappyWiktor) to be approved.
+3. **Chat** — once paired, try prompts such as:
+   - `Check fleet status`
+   - `Which devices are at risk?`
+   - `Underclock the worst ASIC`
+4. **Approve proposals** — when the agent proposes a command (e.g. underclocking), reply with the approval snippet it provides in chat, for example:
+   ```
+   /sc-approve b0dcbb72-e1e8-481c-983d-87a6503dfb48 allow-once
+   ```
+   Only then does the command actually reach the fleet.
+
 ---
 
 ## Quick Start
