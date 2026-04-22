@@ -1,0 +1,18 @@
+# rag-tasks image — RAG ingest pipeline + knowledge_query task.
+# Build from repo root:  docker build -f Dockerfile.rag-tasks -t rag-tasks:latest .
+
+FROM python:3.11-slim
+RUN pip install --no-cache-dir python-dotenv httpx numpy azure-storage-blob
+
+# knowledge_query — self-contained single-shot script invoked by the
+# `knowledge_query` catalog template (catalog uses absolute path).
+COPY modules/rag/tasks/knowledge_query.py /app/scripts/knowledge_query.py
+
+# RAG ingest pipeline — all modules needed for the rag_ingest workflow.
+# Task scripts use relative paths (e.g. `python modules/rag/tasks/load_documents.py`)
+# and imports like `from modules.rag.chunker import ...` resolved via PYTHONPATH=/work.
+COPY modules/__init__.py /work/modules/__init__.py
+COPY modules/rag/ /work/modules/rag/
+
+ENV PYTHONPATH=/work
+WORKDIR /work

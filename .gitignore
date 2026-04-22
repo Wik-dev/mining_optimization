@@ -32,3 +32,6 @@ notes/
 # IDE
 .vscode/
 .idea/
+
+# RAG local env (contains OPENAI_API_KEY — see modules/rag/.env.example)
+modules/rag/.env

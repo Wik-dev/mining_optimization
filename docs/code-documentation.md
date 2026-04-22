@@ -145,7 +145,7 @@ knowledge_corpus.md → load_documents → chunk_documents → embed_chunks → 
 
 Output: `index.json` (~44 chunks with embeddings), referenced as `@<ingest_hash>.build_index:result`.
 
-**Query script** (`validance-workflow/modules/rag/tasks/knowledge_query.py`): Reads query from `VALIDANCE_PARAMS`, loads `index.json`, embeds via OpenAI `text-embedding-3-small`, cosine similarity top-K=5, generates answer via `gpt-4.1-mini`.
+**Query script** ([`modules/rag/tasks/knowledge_query.py`](../modules/rag/tasks/knowledge_query.py)): Reads query from `VALIDANCE_PARAMS`, loads `index.json`, embeds via OpenAI `text-embedding-3-small`, cosine similarity top-K=5, generates answer via `gpt-4.1-mini`.
 
 ---
 

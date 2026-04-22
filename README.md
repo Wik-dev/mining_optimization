@@ -178,7 +178,7 @@ mining_optimization/
 |-------|-----------|------|---------|
 | `mdk-fleet-intelligence` | `Dockerfile` | ~500 MB | Full ML pipeline (pandas, XGBoost, scikit-learn, matplotlib) |
 | `fleet-control` | `Dockerfile.control` | ~50 MB | Fleet status queries + control actions (stdlib only) |
-| `rag-tasks` | (in validance-workflow) | ~120 MB | Knowledge query via RAG (httpx, numpy) |
+| `rag-tasks` | `Dockerfile.rag-tasks` | ~120 MB | Knowledge query via RAG (httpx, numpy) — ingest pipeline + single-shot query |
 
 ---
 

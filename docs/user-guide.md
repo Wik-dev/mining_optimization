@@ -23,7 +23,7 @@ From clone to a working report:
 ```bash
 # 0. Clone and set up
 git clone <repo-url> && cd mining_optimization
-export PYTHONPATH="$(cd ../validance-workflow && pwd)"
+pip install validance-sdk  # provides the Task / Workflow SDK used by workflow definitions
 
 # 1. Register workflows with Validance (~5s)
 python scripts/register_validance_workflows.py --api-url http://localhost:8001
@@ -57,13 +57,13 @@ Prerequisites: Docker running, Validance API at `:8001`, task images built. See 
 | Validance API | Running at `:8001` (dev) or `:8000` (prod) | `curl -s http://localhost:8001/api/health` |
 | Task images | `mdk-fleet-intelligence`, `fleet-control`, `rag-tasks` | `docker images \| grep -E 'mdk\|fleet-control\|rag-tasks'` |
 | Python 3.11+ | In dev container or host | `python3 --version` |
-| PYTHONPATH | Includes validance-workflow | `echo $PYTHONPATH` |
+| Validance SDK | Installed in current Python env | `python -c "from validance.sdk import Task, Workflow"` |
 
 Set up the environment:
 
 ```bash
 cd mining_optimization
-export PYTHONPATH="$(cd ../validance-workflow && pwd)"
+pip install validance-sdk
 ```
 
 ### 1.2 Register Workflows (Once)
@@ -569,7 +569,7 @@ Applied before tier logic. Always win.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `PYTHONPATH` | — | Must include `validance-workflow/` for SDK imports |
+| `OPENAI_API_KEY` | — | Required for `embed_chunks` and `knowledge_query` (see `modules/rag/.env.example`) |
 | `CTX_API_URL` | `http://localhost:8000` | Validance API URL (container context) |
 | `CTX_CUTOFF_TIMESTAMP` | — | Growing-window cutoff (ISO 8601). Set by orchestrate_simulation.py per cycle. Filters ingest data to `[start, cutoff]`. |
 | `CTX_TRAINING_HASH` | — | Training workflow hash. Used by Pattern 5a simulation wrapper. |

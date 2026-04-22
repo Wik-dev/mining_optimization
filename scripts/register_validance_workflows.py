@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Register fleet intelligence workflows with the Validance engine via REST API.
 
-Registers 7 composable workflows:
+Registers 8 workflows:
   - mdk.pre_processing    (3 tasks: ingest → features → kpi)
   - mdk.train             (1 task: train anomaly model)
   - mdk.score             (1 task: score fleet)
@@ -9,6 +9,7 @@ Registers 7 composable workflows:
   - mdk.generate_corpus   (1 task: synthetic data generation)
   - mdk.generate_batch    (1 task: simulation batch generation)
   - mdk.fleet_simulation  (1 task: Pattern 5a growing-window simulation wrapper)
+  - rag_ingest            (5 tasks: load → chunk → embed → build_index → build_receipt)
 
 Usage:
     python scripts/register_validance_workflows.py [--api-url https://api.validance.io]
@@ -24,6 +25,7 @@ import requests
 # Add project root so we can import the workflow definitions
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from workflows.fleet_intelligence import WORKFLOWS
+from workflows.rag_ingest import WORKFLOWS as RAG_WORKFLOWS
 
 
 def workflow_to_api_json(wf):
@@ -93,8 +95,11 @@ def main():
         "generate_corpus": "1-task synthetic data generation",
         "generate_batch": "1-task simulation batch generation (stateful)",
         "fleet_simulation": "1-task Pattern 5a growing-window simulation wrapper (UI-triggerable)",
+        "rag_ingest": "5-task RAG ingest (load → chunk → embed → build_index → build_receipt)",
     }
     for key, factory in WORKFLOWS.items():
+        register(args.api_url, factory(), descriptions[key])
+    for key, factory in RAG_WORKFLOWS.items():
         register(args.api_url, factory(), descriptions[key])
 
     # Verify

@@ -513,7 +513,7 @@ All tasks run in containers from `mdk-fleet-intelligence:latest` (or `fleet-cont
 |-------|----------|------|---------|
 | `mdk-fleet-intelligence:latest` | Python 3.11 + pandas, numpy, scikit-learn, XGBoost, matplotlib, scipy. All `tasks/` + `scripts/` at `/app/` | ~500 MB | Pipeline tasks (ingest, features, kpi, train, score, trends, optimize, report) |
 | `fleet-control:latest` | Python 3.11 + stdlib only. `fleet_status.py` + `control_action.py` at `/app/tasks/` | ~50 MB | Catalog tasks (fleet queries, control actions via proposal pipeline) |
-| `rag-tasks:latest` | Python 3.11 + httpx, numpy, azure-storage-blob. `knowledge_query.py` at `/app/scripts/`, RAG modules at `/work/modules/rag/` | ~120 MB | Knowledge query (single-shot RAG) and RAG ingest pipeline (rag.ingest workflow) |
+| `rag-tasks:latest` | Python 3.11 + httpx, numpy, azure-storage-blob. `knowledge_query.py` at `/app/scripts/`, RAG modules at `/work/modules/rag/`. Built from `Dockerfile.rag-tasks` | ~120 MB | Knowledge query (single-shot RAG) and RAG ingest pipeline (`rag_ingest` workflow) |
 
 ## Scenario Data
 

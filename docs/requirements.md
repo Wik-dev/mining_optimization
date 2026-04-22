@@ -34,7 +34,7 @@ This specification covers the **Fleet Intelligence** system: an AI-driven optimi
 | **Governance Layer** (Validance)  | Approval gates, learned policies, rate limits, audit trail, content-addressed execution chain                                                 | Human-in-the-loop control. Every action is traceable.           |
 
 
-**Out of scope**: The SafeClaw plugin and Validance kernel have their own requirements documents (`safeclaw/docs/requirements.md`, `validance-workflow/CLAUDE.md`). This document covers the mining-specific ML pipeline and its integration contract with the reasoning and governance layers.
+**Out of scope**: The SafeClaw plugin and Validance kernel have their own requirements documents maintained in their respective repositories. This document covers the mining-specific ML pipeline and its integration contract with the reasoning and governance layers.
 
 ### 1.2 Requirement Layers
 
