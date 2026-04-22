@@ -5,6 +5,8 @@ author: "Wiktor Lisowski"
 date: "April 2026"
 ---
 
+**Source code:** [github.com/Wik-dev/mining_optimization](https://github.com/Wik-dev/mining_optimization)
+
 ## Abstract
 
 Bitcoin mining profitability is dominated by marginal gains in energy efficiency and by the avoidance of unplanned hardware failures, yet most operators rely on the naive joules-per-terahash (J/TH) metric and reactive maintenance. We present a three-layer fleet intelligence architecture that addresses both limitations through a single pipeline: (i) a deterministic ML detection layer that ingests ASIC telemetry, engineers physics-informed features, computes a composite **True Efficiency (TE)** key performance indicator, and classifies device health; (ii) a contextual AI reasoning layer that synthesizes ML perception with market and organizational signals to propose justified corrective actions; and (iii) a governance layer that enforces human approval, learned policies, and a tamper-evident audit trail before any action reaches hardware. TE is defined as a decomposition separating hardware-intrinsic efficiency, voltage inefficiency, and cooling overhead, each mapping to a distinct failure mode. A supervised XGBoost ensemble trained on 1.5 M rows of physics-based synthetic telemetry achieves device-level precision and recall of 1.00 across 57 devices and 5 scenarios, with a mean detection lead time of **321.7 hours (≈ 13.4 days)** before the ground-truth failure label activates. We discuss operational benefits, the security implications of an autonomous optimization agent, and a defense-in-depth posture built around hard-coded safety overrides that bound every upstream decision.
@@ -255,6 +257,8 @@ An autonomous agent that can underclock, overclock, or shut down mining hardware
 ---
 
 ## 9. Repository and Artifacts
+
+The full codebase is at [github.com/Wik-dev/mining_optimization](https://github.com/Wik-dev/mining_optimization). The tables below index the relevant directories and artifacts.
 
 ### Repository layout
 
