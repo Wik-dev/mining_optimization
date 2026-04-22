@@ -40,7 +40,7 @@ The simulation has progressed enough that ambient temperature rose from 15°C to
    ```
    /sc-approve b0dcbb72-e1e8-481c-983d-87a6503dfb48 allow-once
    ```
-   Only then does the command actually reach the fleet.
+   Only then does the command actually reach the fleet. This is equivalent to clicking "Approve" on the web UI at https://mdk.validance.io/commands .
 
 ---
 
