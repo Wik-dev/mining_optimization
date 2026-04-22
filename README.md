@@ -268,9 +268,9 @@ An autonomous agent that can underclock, overclock, or shut down mining hardware
 
 ### Swappable components
 
-Each layer is replaceable. The AI can be any agent that emits structured action proposals; the governance layer can be any service that enforces schema validation, approval policies, rate limits, secret isolation, and an audit trail. In this project the AI is OpenClaw, the bridge is the SafeClaw plugin, the governance layer is Validance — but the architecture depends on their interfaces, not their identities.
+Each layer is replaceable. The AI can be any agent that emits structured action proposals; the governance layer can be any service with its own execution logic — Validance is chosen as it enforces schema validation, approval policies, rate limits, secret isolation, and an audit trail. In this project the AI is OpenClaw, the bridge is the SafeClaw plugin, the governance layer is Validance — but the architecture depends on their interfaces, not their identities.
 
-OpenClaw is a deliberate choice, not a bet on a trend. It is one of the most capable and unconstrained agent frameworks available, which makes integrating it into an operational setting non-trivial. We use it precisely for that reason: if SafeClaw + Validance can safely govern an unbounded agent, they can govern anything narrower. The choice demonstrates the framework, not the other way around.
+OpenClaw is chosen as it is one of the most unconstrained agent frameworks available, which makes integrating it into an operational setting non-trivial. The architecture demonstrates how to turn an unconstrained AI agent into a safe, specialized one.
 
 ### Bounded action surface
 
@@ -286,7 +286,7 @@ The AI agent cannot invent new actions — it can only call one of 7 registered 
 | `fleet_schedule_maintenance` | Schedule inspection / repair / firmware update (policy: ≤ 20 % offline concurrently) | `fleet-control` | human-confirm |
 | `fleet_emergency_shutdown` | Immediate device shutdown (policy ceiling: never auto-approved) | `fleet-control` | human-confirm |
 
-Authoritative schema: [safeclaw/catalog/default.json](https://github.com/Wik-dev/safeclaw/blob/main/catalog/default.json). Images built from [`Dockerfile.control`](Dockerfile.control) (`fleet-control`) and [`Dockerfile.rag-tasks`](Dockerfile.rag-tasks) (`rag-tasks`); `web` is generic Validance infrastructure.
+AI action contract (catalogue): [safeclaw/catalog/default.json](https://github.com/Wik-dev/safeclaw/blob/main/catalog/default.json). Images `fleet-control` and `rag-tasks` are built in this repo ([`Dockerfile.control`](Dockerfile.control), [`Dockerfile.rag-tasks`](Dockerfile.rag-tasks)); `web` is a generic image provided by the Validance platform.
 
 ### Separation of concerns
 

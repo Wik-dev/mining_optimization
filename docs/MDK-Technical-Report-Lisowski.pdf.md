@@ -27,7 +27,11 @@ This project addresses both problems with a single pipeline. A supervised ML lay
 
 Three functional layers sit between the fleet and the MOS (Mining Operating System) control plane. Each layer has a single responsibility and communicates with the next through typed artifacts. The layer boundaries are themselves the safety story: **ML classifies (deterministic), AI reasons (contextual), Governance approves (auditable), and hard-coded safety overrides bound every decision made above them.**
 
-![Fleet Intelligence — End-to-End Architecture](assets/architecture.svg)
+\begin{figure}[p]
+\centering
+\makebox[\textwidth][c]{\includegraphics[width=1.3\textwidth,keepaspectratio]{assets/architecture.pdf}}
+\caption{Fleet Intelligence — End-to-End Architecture}
+\end{figure}
 
 **(1) Hardware** emits raw telemetry every 5 minutes: hashrate, power, voltage, clock, chip temperature, cooling power, and ambient temperature. In production this stream originates from MOS workers (`miningos-wrk-miner-antminer`) via Hyperbee time-series; in this prototype it is produced by a physics-based generator (§4.1).
 
@@ -149,7 +153,7 @@ The classifier trains on 50 of 75 engineered features; the quantile regressor ad
 An XGBoost classifier with `n_estimators=200`, `max_depth=6`, and `scale_pos_weight` for class imbalance is trained on the full 1.6 M-row corpus (1,509,447 rows; 57 devices across 5 scenarios). The decision threshold is set at 0.3 — biased toward recall, since in mining a missed failure costs far more than an unnecessary inspection. The model trains 10 independent binary classifiers, one per anomaly type:
 
 | Anomaly type | Positive rate | Devices | Dominant feature (`importance`) |
-|---|---:|---:|---|
+|-------------------------|----------:|--------:|----------------------------------------------------|
 | `hashrate_decay` | 12.4 % | 4 | `efficiency_jth_fleet_z` (0.34) |
 | `solder_joint_fatigue` | 7.4 % | 3 | `chip_count_active` (1.00) |
 | `capacitor_aging` | 6.4 % | 4 | `te_score` (0.49) |
@@ -186,18 +190,18 @@ Gradual-onset anomalies (`capacitor_aging`, `psu_instability`) show shorter lead
 
 The aggregate model's top features validate the TE decomposition as a feature-engineering strategy: TE-derived features (`te_score`, `te_base`, `hashrate_ratio`, `efficiency_jth_mean_7d`) together account for 34 % of total predictive gain.
 
-| Rank | Feature | Gain | Physical meaning |
-|---:|---|---:|---|
-| 1 | `reboot_count` | 16.2 % | Operational stress / instability history |
-| 2 | `te_score` | 13.3 % | TE composite — validates KPI design |
-| 3 | `hashrate_ratio` | 8.2 % | Actual vs. nominal — chip degradation |
-| 4 | `efficiency_jth_mean_7d` | 7.0 % | Weekly efficiency trend — gradual drift |
-| 5 | `te_base` | 5.9 % | Hardware-intrinsic efficiency component |
-| 6 | `chip_count_active` | 4.1 % | Chip dropout — solder-joint failure |
-| 7 | `fan_rpm` | 4.0 % | Cooling health — bearing wear |
-| 8 | `voltage_ripple_std_24h` | 3.5 % | PSU instability marker |
-| 9 | `power_w_std_1h` | 2.6 % | Short-term power volatility |
-| 10 | `voltage_v_std_1h` | 2.4 % | Voltage noise — capacitor aging |
+| Rank | Feature                  | Gain | Physical meaning                          |
+|:-----|:-------------------------|-----:|:------------------------------------------|
+| 1    | `reboot_count`           | 16.2 % | Operational stress / instability history |
+| 2    | `te_score`               | 13.3 % | TE composite — validates KPI design      |
+| 3    | `hashrate_ratio`         |  8.2 % | Actual vs. nominal — chip degradation    |
+| 4    | `efficiency_jth_mean_7d` |  7.0 % | Weekly efficiency trend — gradual drift  |
+| 5    | `te_base`                |  5.9 % | Hardware-intrinsic efficiency component  |
+| 6    | `chip_count_active`      |  4.1 % | Chip dropout — solder-joint failure      |
+| 7    | `fan_rpm`                |  4.0 % | Cooling health — bearing wear            |
+| 8    | `voltage_ripple_std_24h` |  3.5 % | PSU instability marker                   |
+| 9    | `power_w_std_1h`         |  2.6 % | Short-term power volatility              |
+| 10   | `voltage_v_std_1h`       |  2.4 % | Voltage noise — capacitor aging          |
 
 The weakest signal remains `dust_fouling`, which manifests similarly to ordinary ambient variation; closing that gap requires ambient-conditioned thermal-resistance features rather than threshold tuning.
 
@@ -220,7 +224,7 @@ The agent submits the proposal through the governance API with the pipeline's se
 ## 6. Operational Benefits
 
 - **Failure prevention.** Early-warning signals, in most cases days before critical failure, allow the operator to schedule controlled underclocking or maintenance rather than absorb the full cost of a failed PSU, fouled heatsink, or burned-out capacitor.
-- **Corrected comparisons.** TE makes heterogeneous devices and sites directly comparable for the first time. The same metric applies across hydro-cooled northern sites and air-cooled southern sites, allowing hardware-deployment decisions to be made on real operating data rather than manufacturer J/TH figures.
+- **Corrected comparisons.** TE makes heterogeneous devices and sites directly comparable. The same metric applies across hydro-cooled northern sites and air-cooled southern sites, allowing hardware-deployment decisions to be made on real operating data rather than manufacturer J/TH figures.
 - **Quantified trade-offs.** Every proposed action carries an explicit \$/day calculation built from current BTC price, current efficiency loss, and current power cost. Underclocking is no longer a judgment call but a net-positive economic decision with a quantified magnitude.
 - **Zero approval fatigue at scale.** Learned policies allow the operator to automate recurring safe patterns (e.g., "always approve underclock to 80 % for S19jPro when risk > 0.9") while preserving the audit trail and the human veto. Approvals reach the operator through both a web dashboard and a Telegram bot, because PSU alerts do not wait until the operator is at a desk.
 
@@ -272,7 +276,7 @@ An autonomous agent that can underclock, overclock, or shut down mining hardware
 ### Workflows
 
 | Workflow | Tasks | Description |
-|---|---:|---|
+|------------------------|------:|--------------------------------------------------------------|
 | [`mdk.pre_processing`](https://github.com/Wik-dev/mining_optimization/blob/main/workflows/fleet_intelligence.py) | 3 | Ingest → features → KPI (shared prefix for training and inference) |
 | [`mdk.train`](https://github.com/Wik-dev/mining_optimization/blob/main/workflows/fleet_intelligence.py) | 1 | XGBoost classifier + quantile regressors |
 | [`mdk.score`](https://github.com/Wik-dev/mining_optimization/blob/main/workflows/fleet_intelligence.py) | 1 | Score fleet with pre-trained model |
@@ -280,3 +284,4 @@ An autonomous agent that can underclock, overclock, or shut down mining hardware
 | [`mdk.generate_corpus`](https://github.com/Wik-dev/mining_optimization/blob/main/workflows/fleet_intelligence.py) | 1 | Synthetic training data generation (all scenarios) |
 | [`mdk.generate_batch`](https://github.com/Wik-dev/mining_optimization/blob/main/workflows/fleet_intelligence.py) | 1 | Stateful simulation batch generation |
 | [`mdk.fleet_simulation`](https://github.com/Wik-dev/mining_optimization/blob/main/workflows/fleet_simulation.py) | 1 | Growing-window simulation wrapper (UI-triggerable) |
+| [`rag_ingest`](https://github.com/Wik-dev/mining_optimization/blob/main/workflows/rag_ingest.py) | 5 | Load → chunk → embed → build_index → build_receipt (organizational knowledge corpus) |
