@@ -102,7 +102,7 @@ python ../../scripts/generate_validation_report.py   # → validation-report.htm
 
 ### Run via workflow engine (containerized)
 
-The pipeline can be orchestrated by the [Validance](https://github.com/validance-io/sdk-python) workflow engine, adding content-addressed audit trails, container isolation, and artifact management. All orchestration scripts talk to the Validance API at `https://api.validance.io` ([interactive docs](https://api.validance.io/docs#/)), which already holds pre-trained model artifacts.
+The pipeline can be orchestrated by the [Validance](https://github.com/validance-io/sdk-python) workflow engine, adding content-addressed audit trails, container isolation, and artifact management. All orchestration scripts talk to the Validance API at `https://api.validance.io/docs#/` ([interactive docs](https://api.validance.io/docs#/)), which already holds pre-trained model artifacts.
 
 ```bash
 # Install the Validance SDK (zero dependencies, declaration only)
