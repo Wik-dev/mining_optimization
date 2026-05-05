@@ -10,6 +10,7 @@ Last edited: 2026-04-06
 
 | Date | Change |
 |------|--------|
+| 2026-05-05 | Retired `tasks/save_refs.py` and the workspace `latest_refs.json` it produced. Old mechanism: the simulation orchestrator wrote refs to the OpenClaw workspace, the agent read them back. Replaced by `fleet_pipeline_status` (live Validance API query) — see README §"Pull path". Removes filesystem coupling between orchestrator and agent. |
 | 2026-05-05 | DR-POR-01 contract tightened: SafeClaw `meta-tool.ts` now strips `input_files` and `session_hash` from `parameters` before kernel submit (was duplicated into both top-level kernel-meta and task params, blurring the layer boundary). Re-enables 2 failing tests in `safeclaw/tests/unit/execute-flow.test.ts`. |
 | 2026-04-18 | §1.1 AI Reasoning Layer updated: added `knowledge_query` (organizational RAG) alongside `fleet_status_query` and `web_search` |
 | 2026-04-18 | DR-CAL-09 corrected: 50→75 features. Fixed stale EXPECTED_TELEMETRY_COLS in features.py (was counting 18 raw telemetry/label cols as engineered features) |
